@@ -49,6 +49,21 @@ local evidence above.
 | Ban-state observability and recovery | https://github.com/lightninglabs/neutrino/issues/253 | Adjacent to false-ban tests because it asks for an unban API when bans are unfair. It is not a compact-filter verifier issue. |
 | All Neutrino findings | https://github.com/lightninglabs/neutrino/pull/348 | Reviewed and excluded from the finding set. The PR is about recognizing Tor v3 addresses in banman; it is not about whether compact-filter sync should ban on unproven bad data. |
 
+## Historical Upstream Cross-Checks
+
+Closed issues and PRs are useful for cross-project testing even when they no
+longer describe a current bug in the project where they were filed. The
+scenario backlog in `PROJECT_PLAN.md` records the concrete tests to add.
+
+| Theme | Upstream History | Cross-Project Use |
+| --- | --- | --- |
+| Filter-header/cfilter disagreement | Neutrino issue https://github.com/lightninglabs/neutrino/issues/3 and PRs https://github.com/lightninglabs/neutrino/pull/130, https://github.com/lightninglabs/neutrino/pull/140, and https://github.com/lightninglabs/neutrino/pull/215 cover malicious or inconsistent compact-filter data. | Keep these as black-box scenarios for both implementations. They are especially relevant to KYOTO-SHOULD-001 through KYOTO-SHOULD-004 because Kyoto still lacks Neutrino-style block-derived interrogation. |
+| Exact BIP158 element rules | Neutrino PRs https://github.com/lightninglabs/neutrino/pull/55 and https://github.com/lightninglabs/neutrino/pull/84, plus issue https://github.com/lightninglabs/neutrino/issues/56, document full-script matching, OP_RETURN exclusion, and empty-filter serialization. | These reinforce the suite's BIP158 exactness scenarios for both implementations, including cases where a fix in one project should not be assumed in the other. |
+| False bans during ordinary chain progress | Kyoto issue https://github.com/2140-dev/kyoto/issues/558 and PR https://github.com/2140-dev/kyoto/pull/559 cover legitimate peers being banned when new block announcements race with in-flight compact-filter requests. | This complements Neutrino issue https://github.com/lightninglabs/neutrino/issues/349: both projects need tests that distinguish provably bad compact-filter data from timing, reorg, or announcement races. |
+| Sync interruption and long cfheader batches | Neutrino issue https://github.com/lightninglabs/neutrino/issues/8 and PR https://github.com/lightninglabs/neutrino/pull/360 cover restart after interrupted cfheaders and long batch timeout behavior. Kyoto PRs https://github.com/2140-dev/kyoto/pull/391 and https://github.com/2140-dev/kyoto/pull/506 add filter-message timeout behavior. | Add long-chain, interrupted-sync, and progress-timeout scenarios so both clients are checked for recovery without manual restart or data deletion. |
+| Header-validation edge cases | Neutrino PR https://github.com/lightninglabs/neutrino/pull/344 and Kyoto PRs https://github.com/2140-dev/kyoto/pull/109, https://github.com/2140-dev/kyoto/pull/273, and https://github.com/2140-dev/kyoto/pull/282 show past Median-Time-Past and header-context pitfalls. | Add valid and invalid header-chain edge cases. These should be scored as BIP157-aligned header verification or implementation robustness depending on the exact assertion. |
+| Witness block and prevout verification | Neutrino PR https://github.com/lightninglabs/neutrino/pull/215 and issue https://github.com/lightninglabs/neutrino/issues/257 relate to deriving spent scripts from block data. Kyoto PRs https://github.com/2140-dev/kyoto/pull/548 and https://github.com/2140-dev/kyoto/pull/549 cover optional witness-block requests. | Use these to drive segwit v0, P2WSH, and taproot prevout scenarios, and to test adapters that claim witness-aware block retrieval. |
+
 ## Current Suite Coverage Notes
 
 The catalog intentionally includes all scenarios found in the current Kyoto and
