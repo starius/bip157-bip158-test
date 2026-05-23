@@ -628,6 +628,60 @@ These are red on failure when the client accepts bad data or misses required wal
 
 Each network test must assert recovery without restart unless the scenario explicitly tests persistence across restart.
 
+## Upstream Issue-Derived Scenario Backlog
+
+This section records the open-issue sweep performed on 2026-05-23. Added
+scenarios are either direct BIP157/BIP158 coverage or implementation/stress
+checks that do not contradict the BIPs. Non-BIP scenarios must be scored as
+`IMPLEMENTATION` or `MAY` unless they cause a mandatory BIP157/BIP158 failure.
+
+### Neutrino-Derived Additions
+
+| Source | Scenario to Add | BIP Alignment | Covered Yet |
+| --- | --- | --- | --- |
+| https://github.com/lightninglabs/neutrino/issues/349 | `network.followup_nonresponse_not_bad_data`: during filter-header conflict resolution, make an honest peer answer the first request but drop or delay the follow-up `cfheaders`/`cfilter` query. The client may retry, disconnect, or deprioritize, but must not report that peer as proven invalid solely because it did not answer. | Supports BIP157's bad-peer interrogation recommendation without treating network failure as cryptographic evidence. | Not yet covered; current delay tests check recovery, not false-ban classification during conflict follow-up. |
+| https://github.com/lightninglabs/neutrino/issues/338 | `bip157.stop_hash_known_by_peer`: create a reorg/stale-branch setup where peer A has seen a stop hash and peer B has not. Assert the client only sends `getcfilters`/`getcfheaders` to peers that know the stop hash, or handles the `SHOULD NOT respond` case without reconnect loops. | Direct BIP157 message-contract coverage. | Partially listed as unknown/stale StopHash handling; not implemented as a peer-specific knowledge test. |
+| https://github.com/lightninglabs/neutrino/issues/218 | `bip157.invalid_persisted_filter_headers_recover`: first sync from mutually consistent malicious peers that commit to a bad filter-header chain, persist state, restart, then introduce an honest peer and require rollback/resync rather than deadlock. | Extends BIP157 conflict-resolution and filter-header persistence coverage. | Not covered; current self-consistent eclipse scenario only reports the trust limitation. |
+| https://github.com/lightninglabs/neutrino/issues/315 and https://github.com/lightninglabs/neutrino/issues/276 | `storage.partial_write_recovery`: after an honest sync, corrupt/truncate local header or filter-header storage in a controlled way, restart, and require either automatic repair/resync or a precise non-crashing error. | Implementation durability; not a BIP conformance requirement. | Not covered. |
+| https://github.com/lightninglabs/neutrino/issues/253 | `ban.expiry_and_unban_capability`: after a provable bad peer is banned, verify ban state is observable when supported, expires or can be cleared according to implementation policy, and the peer is not retried before that policy allows. | Implementation peer-management check; BIP157 recommends banning provably bad peers but does not define an unban API. | Partially covered by ban-state assertions; expiry/unban is not covered. |
+| https://github.com/lightninglabs/neutrino/issues/110, https://github.com/lightninglabs/neutrino/issues/4, and https://github.com/lightninglabs/neutrino/pull/334 | `network.idle_keepalive_and_long_wait`: keep the client connected while no new blocks or filters arrive for longer than ordinary peer idle timeouts, then mine a new block and require continued sync without restart. | Implementation liveness; compatible with BIP157. | Not covered; current outages are active fault windows, not idle waits. |
+| https://github.com/lightninglabs/neutrino/issues/292 and https://github.com/lightninglabs/neutrino/pull/303 | `query.heterogeneous_peer_work_stealing`: run many concurrent filter/block requests across fast, slow, and intermittently failing peers; require progress, bounded latency, and no starvation of healthy peers. | Implementation performance/liveness; compatible with the BIP157 multi-peer model. | Partially covered by slow/fast peer scenarios; no high-volume job queue yet. |
+| https://github.com/lightninglabs/neutrino/issues/60 | `config.invalid_initial_peer_fallback`: configure multiple peers where one DNS/address entry is invalid and at least one honest peer is valid. The adapter/client should continue with valid peers rather than fail the entire run. | Implementation robustness; compatible with BIP157's multiple-peer recommendation. | Not covered. |
+| https://github.com/lightninglabs/neutrino/issues/6 and https://github.com/lightninglabs/neutrino/issues/67 | `chain.deep_reorg_sendheaders`: after initial sync, deliver a deep reorg and new tips via `sendheaders`; include a restart between old and new branches. The client must follow most work, roll back stale filter state, and resume. | Headers-first and most-work behavior are BIP157-aligned; `sendheaders` itself is BIP130 and optional. | Partially covered by generic reorg during filter sync; not deep, restarted, or sendheaders-specific. |
+| https://github.com/lightninglabs/neutrino/issues/71, https://github.com/lightninglabs/neutrino/issues/66, and https://github.com/lightninglabs/neutrino/pull/282 | `chain.long_checkpointed_header_sync`: build a long chain crossing multiple BIP157 checkpoint intervals and run header/filter-header sync with slow peers, large batches, and repeated `getcfcheckpt` use. | Directly exercises BIP157 range/checkpoint behavior; performance assertions are implementation-level. | Not covered; current fixture is short and this is the next likely blocker for Neutrino. |
+| https://github.com/lightninglabs/neutrino/pull/345 | `import.cfilter_header_linkage`: for clients that expose an import path, import valid and invalid compact filters from a non-P2P source and require verification against stored filter headers before persistence. | Implementation extension of BIP157 filter-header linkage; not required for black-box P2P clients. | Not covered and should be optional. |
+| https://github.com/lightninglabs/neutrino/pull/340 | `rescan.concurrent_watch_and_cancel`: add watch scripts before sync, during sync, and after sync; cancel/restart rescans; require deduplicated wallet matches and no missed spends. | Wallet-client correctness built on BIP158 filters; not a BIP wire requirement. | Partially covered by simple watch/match; not concurrent or cancellation-heavy. |
+| https://github.com/lightninglabs/neutrino/issues/319 | `transport.bip324_optional`: when an adapter declares BIP324/v2transport support, rerun the honest and adversarial matrix over encrypted transport. | Optional transport coverage; BIP157 does not require BIP324. | Not covered and should be skipped unless supported. |
+
+Open Neutrino items intentionally not added as BIP157/BIP158 suite work:
+`#350` mempool support, `#332` standalone REST API, `#252` build docs, `#237`
+WASM, `#224` logo, `#142` Litecoin, `#69` BIP151, `#64` witness-download
+optimization, `#9` transaction broadcast, `#89` internal peer iteration cleanup,
+and old generic test flakes `#304`, `#169`, `#30`, `#29` except where their
+liveness theme is covered by the scenarios above.
+
+Open Neutrino PRs intentionally not treated as BIP157/BIP158 conformance
+coverage: SQL backend/migration stack `#352`-`#357` is covered only through the
+storage durability scenario if an adapter exposes those backends; fee estimator
+`#351`, custom chainimport HTTP client `#343`, query submodule refactor `#325`,
+code cleanup `#312`, logging `#291`, transaction relay `#190`, and reject
+message plumbing `#111` are outside this suite's compact-filter scope. PR
+`#348` is excluded from the findings because it is about Tor v3 banman address
+recognition, not compact-filter bad-data classification.
+
+### Kyoto-Derived Additions
+
+| Source | Scenario to Add | BIP Alignment | Covered Yet |
+| --- | --- | --- | --- |
+| https://github.com/2140-dev/kyoto/issues/561 | `chain.reorg_filter_in_flight_long`: mine a chain long enough to require several filter requests, start sync, invalidate a block, mine a heavier branch, and deliver stale/in-flight filters around the reorg. Assert no permanent hang, no unjustified ban of the only honest peer, and correct rollback of filter headers/filters. | Directly supports BIP157 most-work and filter-header consistency expectations. | Partially covered by generic reorg during filter sync; not the long/racy 4200-block style case. |
+| https://github.com/2140-dev/kyoto/issues/538 | `api.sync_phase_observability`: optional adapter capability for headers-only sync, filter-header/filter sync, and matched-block download phases, with progress events for each. | API/testability enhancement; does not change BIP157 requirements. | Not covered; current API observes best block and matches only. |
+| https://github.com/2140-dev/kyoto/issues/583 | `checkpoint.network_specific_methods`: verify adapters do not rely on mainnet-only checkpoint helpers in regtest/signet-style runs and return explicit unsupported errors for network-specific checkpoint APIs. | Implementation API robustness; compatible with BIP157 trusted checkpoints. | Not covered. |
+| https://github.com/2140-dev/kyoto/pull/556 | no BIP157/BIP158 scenario | Transaction broadcast timeout behavior is outside the compact-filter conformance scope. | Not applicable. |
+
+Open Kyoto items intentionally not added as black-box conformance scenarios:
+`#578` rbmt migration and `#443` crate restructuring are internal architecture
+work with no direct BIP157/BIP158 behavior to assert.
+
 ## Kyoto Adapter Plan
 
 Kyoto is Rust, so build `adapters/kyoto` as a Rust binary.
@@ -902,4 +956,3 @@ The guide must include:
 7. Run honest sync and first adversarial conflict against Kyoto.
 8. Build the Neutrino adapter.
 9. Add netem mode after the basic adversarial suite is stable.
-

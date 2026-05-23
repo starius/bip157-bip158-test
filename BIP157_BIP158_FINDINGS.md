@@ -22,6 +22,33 @@ weak `SHOULD` behavior should score orange.
 | NEUTRINO-SHOULD-003 | SHOULD | Bad-filter peer resolution is meaningful but not complete for all BIP158 element sets because it relies on partial verification plus OP_RETURN mismatch heuristics. | OP_RETURN mismatch counting and potential bans are at `/home/user/neutrino/blockmanager.go:1766`; unit coverage exists in `/home/user/neutrino/bamboozle_unit_test.go:657`. | `bip157.direct_bad_cfilter_ban`, `neutrino.resolve_filter_mismatch.*` |
 | NEUTRINO-TEST-004 | Test gap | Neutrino has deeper internal tests than Kyoto, including real `rpctest` nodes and conflict-resolution unit tests, but those tests are implementation-specific and not a reusable BIP157/BIP158 conformance suite. | SimNet/rpctest setup appears in `/home/user/neutrino/sync_test.go:1088` and multi-peer setup at `/home/user/neutrino/sync_test.go:1465`. | The suite catalog imports all listed Neutrino baseline scenarios and adds stronger black-box adversarial scenarios. |
 
+## Upstream Issue and PR Cross-References
+
+Checked against open GitHub issues and PRs on 2026-05-23. These are
+cross-references for future upstream reports. They are not substitutes for the
+local evidence above.
+
+### Kyoto
+
+| Local Finding | Upstream Item | Relationship |
+| --- | --- | --- |
+| KYOTO-SHOULD-001, KYOTO-SHOULD-002, KYOTO-SHOULD-004 | https://github.com/2140-dev/kyoto/issues/561 | Partial overlap. The issue is about reorganization handling while filter data is in flight, including `UnknownFilterHash` behavior and peer banning/exhaustion. It is relevant when discussing reorg/filter race and peer-punishment tests, but it is not a direct report of the self-consistent eclipse case. |
+| KYOTO-SHOULD-004 | https://github.com/2140-dev/kyoto/issues/538 | Adjacent API-observability issue. It asks for separate header, filter, and block-fetch process control, which would make conformance adapters and reports more precise. It is not itself a BIP157/BIP158 mismatch. |
+| KYOTO-MUST-003 | none found | I did not find an open Kyoto issue or PR for `get_block` accepting stale-but-known headers through the non-canonical `height_of_hash` path. |
+| All Kyoto findings | https://github.com/2140-dev/kyoto/pull/556 | Reviewed and excluded from the BIP157/BIP158 finding set. The PR concerns transaction broadcast timeout behavior, not compact filters or downloaded-block/filter verification. |
+
+### Neutrino
+
+| Local Finding | Upstream Item | Relationship |
+| --- | --- | --- |
+| NEUTRINO-SHOULD-003 | https://github.com/lightninglabs/neutrino/issues/349 | Directly related to bad-peer classification. The issue says compact-filter sync can ban peers for timeout/disconnect/follow-up query failure even when invalid compact-filter data was not proven. |
+| NEUTRINO-SHOULD-003 | https://github.com/lightninglabs/neutrino/issues/338 | Related BIP157 request-formation/reconnect-loop issue. It points at `getcfilters`/`getcfheaders` requests whose `StopHash` may not be known to the queried peer, causing bitcoind disconnect loops during reorg conditions. |
+| NEUTRINO-SHOULD-003 | https://github.com/lightninglabs/neutrino/issues/218 | Related persistence/recovery issue. It describes a node stuck after all peers previously advertised an invalid filter-header chain and a later peer exposes an invalid filter. |
+| NEUTRINO-SHOULD-003 | https://github.com/lightninglabs/neutrino/pull/345 | Adjacent PR. It verifies imported compact filters against locally stored filter headers before persistence. That helps imported-filter integrity, but it does not fix block-derived BIP158 exactness for coinbase outputs or skipped prevout scripts. |
+| NEUTRINO-MUST-001, NEUTRINO-SHOULD-002 | none found | I did not find an open Neutrino issue or PR specifically covering `VerifyBasicBlockFilter` skipping coinbase transaction outputs or skipping unsupported/non-witness prevout-script derivation. |
+| Ban-state observability and recovery | https://github.com/lightninglabs/neutrino/issues/253 | Adjacent to false-ban tests because it asks for an unban API when bans are unfair. It is not a compact-filter verifier issue. |
+| All Neutrino findings | https://github.com/lightninglabs/neutrino/pull/348 | Reviewed and excluded from the finding set. The PR is about recognizing Tor v3 addresses in banman; it is not about whether compact-filter sync should ban on unproven bad data. |
+
 ## Current Suite Coverage Notes
 
 The catalog intentionally includes all scenarios found in the current Kyoto and
