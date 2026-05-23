@@ -17,13 +17,14 @@
           default = pkgs.mkShell {
             packages = [
               pkgs.bitcoind
-              pkgs.go_1_23
+              pkgs.cargo
+              pkgs.go
               pkgs.gotestsum
               pkgs.iproute2
               pkgs.jq
               pkgs.just
               pkgs.protobuf
-              pkgs.rustup
+              pkgs.rustc
             ];
           };
         });
