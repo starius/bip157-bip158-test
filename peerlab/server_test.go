@@ -3,6 +3,7 @@ package peerlab
 import (
 	"net"
 	"testing"
+	"time"
 
 	"github.com/bip157-bip158-test/suite/chainlab"
 	"github.com/btcsuite/btcd/wire"
@@ -59,6 +60,101 @@ func TestServerServesHeadersAndFilters(t *testing.T) {
 			t.Fatalf("filter %d was empty", i)
 		}
 	}
+}
+
+func TestServerCanCorruptCFHeaders(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptCFHeaders: map[uint32]bool{2: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getCFHeaders := wire.NewMsgGetCFHeaders(wire.GCSFilterRegular, 1, &stop)
+	if err := wire.WriteMessage(conn, getCFHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfheaders: %v", err)
+	}
+	cfHeaders := readMessageOf[*wire.MsgCFHeaders](t, conn, fixture)
+	if *cfHeaders.FilterHashes[0] != fixture.Blocks[1].Filter.FilterHash {
+		t.Fatalf("height 1 filter hash should stay honest")
+	}
+	if *cfHeaders.FilterHashes[1] == fixture.Blocks[2].Filter.FilterHash {
+		t.Fatalf("height 2 filter hash was not corrupted")
+	}
+}
+
+func TestServerCanCorruptCFilter(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptCFilters: map[uint32]bool{2: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getFilters := wire.NewMsgGetCFilters(wire.GCSFilterRegular, 2, &stop)
+	if err := wire.WriteMessage(conn, getFilters, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfilters: %v", err)
+	}
+	filter := readMessageOf[*wire.MsgCFilter](t, conn, fixture)
+	if chainlab.EqualBytes(filter.Data, fixture.Blocks[2].Filter.FilterBytes) {
+		t.Fatalf("height 2 filter bytes were not corrupted")
+	}
+}
+
+func TestServerCanDelayResponses(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		DelayByCommand: map[string]time.Duration{"headers": 25 * time.Millisecond},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	getHeaders := wire.NewMsgGetHeaders()
+	started := time.Now()
+	if err := wire.WriteMessage(conn, getHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getheaders: %v", err)
+	}
+	_ = readMessageOf[*wire.MsgHeaders](t, conn, fixture)
+	if elapsed := time.Since(started); elapsed < 20*time.Millisecond {
+		t.Fatalf("headers response was not delayed enough: %s", elapsed)
+	}
+}
+
+func dialAndHandshake(t *testing.T, server *Server, fixture *chainlab.Fixture) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", server.Addr())
+	if err != nil {
+		t.Fatalf("dial server: %v", err)
+	}
+	sendVersion(t, conn, fixture)
+	readUntilVerAck(t, conn, fixture)
+	return conn
 }
 
 func sendVersion(t *testing.T, conn net.Conn, fixture *chainlab.Fixture) {

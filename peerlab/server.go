@@ -28,10 +28,30 @@ type TranscriptEntry struct {
 	Summary string
 }
 
+// Behavior describes deterministic faults a scenario wants the peer to inject.
+// Height maps use block heights from the fixture, not p2p message indexes.
+type Behavior struct {
+	CorruptCFHeaders map[uint32]bool
+	CorruptCFilters  map[uint32]bool
+	DelayByCommand   map[string]time.Duration
+}
+
+// Option customizes a peer simulator.
+type Option func(*Server)
+
+// WithBehavior makes the peer inject deterministic faults into otherwise
+// normal BIP157 responses.
+func WithBehavior(behavior Behavior) Option {
+	return func(s *Server) {
+		s.behavior = cloneBehavior(behavior)
+	}
+}
+
 // Server is an honest BIP157 regtest peer backed by a chainlab fixture.
 type Server struct {
-	params  *chaincfg.Params
-	fixture *chainlab.Fixture
+	params   *chaincfg.Params
+	fixture  *chainlab.Fixture
+	behavior Behavior
 
 	listener net.Listener
 	done     chan struct{}
@@ -41,12 +61,16 @@ type Server struct {
 }
 
 // NewServer returns a peer simulator for fixture.
-func NewServer(fixture *chainlab.Fixture) *Server {
-	return &Server{
+func NewServer(fixture *chainlab.Fixture, opts ...Option) *Server {
+	server := &Server{
 		params:  fixture.Params,
 		fixture: fixture,
 		done:    make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(server)
+	}
+	return server
 }
 
 // Start begins listening on addr. Use "127.0.0.1:0" to allocate a free port.
@@ -186,6 +210,9 @@ func (s *Server) handleMessage(conn net.Conn, peer string, msg wire.Message) err
 }
 
 func (s *Server) write(conn net.Conn, peer string, msg wire.Message) error {
+	if delay := s.behavior.DelayByCommand[msg.Command()]; delay > 0 {
+		time.Sleep(delay)
+	}
 	s.record(peer, "out", msg.Command(), summarize(msg))
 	return wire.WriteMessage(conn, msg, wire.ProtocolVersion, s.params.Net)
 }
@@ -220,6 +247,9 @@ func (s *Server) cfHeadersResponse(req *wire.MsgGetCFHeaders) (*wire.MsgCFHeader
 	}
 	for h := int(req.StartHeight); h <= stopHeight; h++ {
 		hash := s.fixture.Blocks[h].Filter.FilterHash
+		if s.behavior.CorruptCFHeaders[uint32(h)] {
+			hash = corruptHash(hash)
+		}
 		_ = resp.AddCFHash(&hash)
 	}
 	return resp, nil
@@ -234,7 +264,11 @@ func (s *Server) cfiltersResponse(req *wire.MsgGetCFilters) ([]wire.Message, err
 	for h := int(req.StartHeight); h <= stopHeight; h++ {
 		block := s.fixture.Blocks[h]
 		hash := block.Block.BlockHash()
-		out = append(out, wire.NewMsgCFilter(req.FilterType, &hash, block.Filter.FilterBytes))
+		data := append([]byte(nil), block.Filter.FilterBytes...)
+		if s.behavior.CorruptCFilters[uint32(h)] {
+			data = corruptBytes(data)
+		}
+		out = append(out, wire.NewMsgCFilter(req.FilterType, &hash, data))
 	}
 	return out, nil
 }
@@ -326,6 +360,44 @@ func summarize(msg wire.Message) string {
 	default:
 		return ""
 	}
+}
+
+func corruptHash(hash chainhash.Hash) chainhash.Hash {
+	hash[0] ^= 0x01
+	return hash
+}
+
+func corruptBytes(data []byte) []byte {
+	if len(data) == 0 {
+		return []byte{0xff}
+	}
+	out := append([]byte(nil), data...)
+	out[len(out)-1] ^= 0x01
+	return out
+}
+
+func cloneBehavior(behavior Behavior) Behavior {
+	return Behavior{
+		CorruptCFHeaders: cloneBoolMap(behavior.CorruptCFHeaders),
+		CorruptCFilters:  cloneBoolMap(behavior.CorruptCFilters),
+		DelayByCommand:   cloneDurationMap(behavior.DelayByCommand),
+	}
+}
+
+func cloneBoolMap(in map[uint32]bool) map[uint32]bool {
+	out := make(map[uint32]bool, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneDurationMap(in map[string]time.Duration) map[string]time.Duration {
+	out := make(map[string]time.Duration, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // WaitForMessage blocks until the transcript contains command or ctx expires.
