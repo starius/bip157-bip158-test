@@ -146,6 +146,43 @@ func TestServerCanDelayResponses(t *testing.T) {
 	}
 }
 
+func TestServerCanDelayOneResponseThenRecover(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		DelayOnceByCommand: map[string]time.Duration{"headers": 25 * time.Millisecond},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	first := timeHeadersResponse(t, conn, fixture)
+	second := timeHeadersResponse(t, conn, fixture)
+	if first < 20*time.Millisecond {
+		t.Fatalf("first headers response was not delayed enough: %s", first)
+	}
+	if second > 75*time.Millisecond {
+		t.Fatalf("second headers response should recover promptly, got %s", second)
+	}
+}
+
+func timeHeadersResponse(t *testing.T, conn net.Conn, fixture *chainlab.Fixture) time.Duration {
+	t.Helper()
+	getHeaders := wire.NewMsgGetHeaders()
+	started := time.Now()
+	if err := wire.WriteMessage(conn, getHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getheaders: %v", err)
+	}
+	_ = readMessageOf[*wire.MsgHeaders](t, conn, fixture)
+	return time.Since(started)
+}
+
 func dialAndHandshake(t *testing.T, server *Server, fixture *chainlab.Fixture) net.Conn {
 	t.Helper()
 	conn, err := net.Dial("tcp", server.Addr())

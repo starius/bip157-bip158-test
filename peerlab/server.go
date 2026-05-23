@@ -31,9 +31,10 @@ type TranscriptEntry struct {
 // Behavior describes deterministic faults a scenario wants the peer to inject.
 // Height maps use block heights from the fixture, not p2p message indexes.
 type Behavior struct {
-	CorruptCFHeaders map[uint32]bool
-	CorruptCFilters  map[uint32]bool
-	DelayByCommand   map[string]time.Duration
+	CorruptCFHeaders   map[uint32]bool
+	CorruptCFilters    map[uint32]bool
+	DelayByCommand     map[string]time.Duration
+	DelayOnceByCommand map[string]time.Duration
 }
 
 // Option customizes a peer simulator.
@@ -210,7 +211,7 @@ func (s *Server) handleMessage(conn net.Conn, peer string, msg wire.Message) err
 }
 
 func (s *Server) write(conn net.Conn, peer string, msg wire.Message) error {
-	if delay := s.behavior.DelayByCommand[msg.Command()]; delay > 0 {
+	if delay := s.delayFor(msg.Command()); delay > 0 {
 		time.Sleep(delay)
 	}
 	s.record(peer, "out", msg.Command(), summarize(msg))
@@ -378,10 +379,21 @@ func corruptBytes(data []byte) []byte {
 
 func cloneBehavior(behavior Behavior) Behavior {
 	return Behavior{
-		CorruptCFHeaders: cloneBoolMap(behavior.CorruptCFHeaders),
-		CorruptCFilters:  cloneBoolMap(behavior.CorruptCFilters),
-		DelayByCommand:   cloneDurationMap(behavior.DelayByCommand),
+		CorruptCFHeaders:   cloneBoolMap(behavior.CorruptCFHeaders),
+		CorruptCFilters:    cloneBoolMap(behavior.CorruptCFilters),
+		DelayByCommand:     cloneDurationMap(behavior.DelayByCommand),
+		DelayOnceByCommand: cloneDurationMap(behavior.DelayOnceByCommand),
 	}
+}
+
+func (s *Server) delayFor(command string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if delay := s.behavior.DelayOnceByCommand[command]; delay > 0 {
+		delete(s.behavior.DelayOnceByCommand, command)
+		return delay
+	}
+	return s.behavior.DelayByCommand[command]
 }
 
 func cloneBoolMap(in map[uint32]bool) map[uint32]bool {

@@ -60,6 +60,18 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				level: score.Should,
 				run:   runBadCFilterAdapter,
 			},
+			{
+				id:    "network.outage_filter_headers",
+				title: "temporary outage during filter-header sync recovers",
+				level: score.Must,
+				run:   runFilterHeaderOutageAdapter,
+			},
+			{
+				id:    "network.outage_block_download",
+				title: "temporary outage during block download recovers",
+				level: score.Must,
+				run:   runBlockDownloadOutageAdapter,
+			},
 		} {
 			adapterResults, err := adapterScenario.run(ctx, opts, fixture)
 			if err != nil {
@@ -327,6 +339,123 @@ func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.F
 		return nil, waitErr
 	}
 	return nil, fmt.Errorf("bad-cfilter was not punished after serving a corrupt filter")
+}
+
+func runFilterHeaderOutageAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	peer := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		DelayOnceByCommand: map[string]time.Duration{"cfheaders": recoverableDelay(opts)},
+	}))
+	if err := peer.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer peer.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	req := api.ConfigureRequest{
+		Network: "regtest",
+		DataDir: opts.DataDir,
+		Peers: []api.PeerConfig{{
+			ID:      "flaky-cfheaders",
+			Address: peer.Addr(),
+		}},
+		RequiredPeers:  1,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return nil, fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return nil, fmt.Errorf("start adapter: %w", err)
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, err
+	}
+	return []score.Result{{
+		ID:       "network.outage_filter_headers",
+		Title:    "temporary outage during filter-header sync recovers",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: "adapter reached the fixture tip after a one-shot cfheaders delay",
+	}}, nil
+}
+
+func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	peer := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		DelayOnceByCommand: map[string]time.Duration{"block": recoverableDelay(opts)},
+	}))
+	if err := peer.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer peer.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	req := api.ConfigureRequest{
+		Network: "regtest",
+		DataDir: opts.DataDir,
+		Peers: []api.PeerConfig{{
+			ID:      "flaky-block",
+			Address: peer.Addr(),
+		}},
+		RequiredPeers:  1,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return nil, fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return nil, fmt.Errorf("start adapter: %w", err)
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	scriptHex := hex.EncodeToString(fixture.WatchedScript)
+	if err := client.PostJSON(ctx, "/watch-script", api.WatchScriptRequest{
+		ScriptPubKeyHex: scriptHex,
+		StartHeight:     0,
+	}, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, err
+	}
+
+	var matches api.GetMatchesResponse
+	if err := client.PostJSON(ctx, "/matches", api.GetMatchesRequest{
+		ScriptPubKeyHex: scriptHex,
+		StartHeight:     0,
+		StopHeight:      tip.Height,
+	}, &matches); err != nil {
+		return nil, fmt.Errorf("get matches: %w", err)
+	}
+	if len(matches.Matches) < len(fixture.Matches) {
+		return nil, fmt.Errorf("adapter reported %d matches after block-delay recovery, expected at least %d", len(matches.Matches), len(fixture.Matches))
+	}
+
+	return []score.Result{{
+		ID:       "network.outage_block_download",
+		Title:    "temporary outage during block download recovers",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("reported %d matches after a one-shot block delay", len(matches.Matches)),
+	}}, nil
+}
+
+func recoverableDelay(opts Options) time.Duration {
+	if opts.Timeout > 2*time.Second {
+		return 500 * time.Millisecond
+	}
+	if opts.Timeout > 200*time.Millisecond {
+		return opts.Timeout / 4
+	}
+	return 50 * time.Millisecond
 }
 
 func peerPunished(peers api.ListPeersResponse, id string) (bool, string) {
