@@ -59,6 +59,32 @@ func BuildFilterMaterial(block *wire.MsgBlock, prevOutScripts [][]byte, prevFilt
 	}, nil
 }
 
+// BuildSingleOutputFilter constructs a one-transaction block and returns the
+// serialized basic filter for its only output. It is used for small normative
+// BIP158 checks, such as proving that OP_RETURN outputs produce an empty filter.
+func BuildSingleOutputFilter(script []byte) ([]byte, chainhash.Hash, error) {
+	block := &wire.MsgBlock{
+		Header: wire.BlockHeader{},
+		Transactions: []*wire.MsgTx{{
+			Version: 1,
+			TxIn: []*wire.TxIn{{
+				PreviousOutPoint: wire.OutPoint{
+					Hash:  chainhash.Hash{},
+					Index: 0xffffffff,
+				},
+				SignatureScript: []byte{0x01, 0x01},
+				Sequence:        0xffffffff,
+			}},
+			TxOut: []*wire.TxOut{{
+				Value:    0,
+				PkScript: script,
+			}},
+		}},
+	}
+	_, serialized, err := BuildBasicFilter(block, nil)
+	return serialized, block.BlockHash(), err
+}
+
 // Contains reports whether a serialized filter matches script for blockHash.
 func Contains(serialized []byte, blockHash chainhash.Hash, script []byte) (bool, error) {
 	filter, err := gcs.FromNBytes(builder.DefaultP, builder.DefaultM, serialized)

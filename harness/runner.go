@@ -1,0 +1,218 @@
+package harness
+
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"time"
+
+	"github.com/bip157-bip158-test/suite/api"
+	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/peerlab"
+	"github.com/bip157-bip158-test/suite/scenario"
+	"github.com/bip157-bip158-test/suite/score"
+)
+
+// Options configures one black-box conformance run.
+type Options struct {
+	AdapterURL string
+	DataDir    string
+	Timeout    time.Duration
+}
+
+// Run executes the currently implemented scenario set and marks the rest of
+// the catalog as skipped. This makes incremental development honest: missing
+// scenarios are visible in every report.
+func Run(ctx context.Context, opts Options) (score.Summary, error) {
+	if opts.Timeout == 0 {
+		opts.Timeout = 60 * time.Second
+	}
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		return score.Summary{}, err
+	}
+
+	results := catalogAsSkipped()
+	upsert(&results, runBIP158Internal(fixture)...)
+
+	if opts.AdapterURL != "" {
+		adapterResults, err := runHonestAdapter(ctx, opts, fixture)
+		if err != nil {
+			upsert(&results, score.Result{
+				ID:       "adapter.honest_wallet_receive_spend",
+				Title:    "honest peer wallet receive and spend",
+				Level:    score.Must,
+				Status:   score.Fail,
+				Evidence: err.Error(),
+			})
+		} else {
+			upsert(&results, adapterResults...)
+		}
+	}
+
+	return score.Summarize(results), nil
+}
+
+func catalogAsSkipped() []score.Result {
+	defs := scenario.Catalog()
+	results := make([]score.Result, 0, len(defs)+1)
+	for _, def := range defs {
+		results = append(results, score.Result{
+			ID:       def.ID,
+			Title:    def.Title,
+			Level:    def.Level,
+			Status:   score.Skipped,
+			Evidence: "cataloged but not executed by this harness build",
+		})
+	}
+	results = append(results, score.Result{
+		ID:       "adapter.honest_wallet_receive_spend",
+		Title:    "honest peer wallet receive and spend",
+		Level:    score.Must,
+		Status:   score.Skipped,
+		Evidence: "requires --adapter-url",
+	})
+	return results
+}
+
+func runBIP158Internal(fixture *chainlab.Fixture) []score.Result {
+	var results []score.Result
+	coinbase := fixture.Blocks[0]
+	coinbaseScript := coinbase.Block.Transactions[0].TxOut[0].PkScript
+	matches, err := chainlab.Contains(coinbase.Filter.FilterBytes, coinbase.Block.BlockHash(), coinbaseScript)
+	results = append(results, resultFromBool("bip158.coinbase_output_included", score.Must, matches && err == nil, err))
+
+	spend := fixture.Blocks[2]
+	matches, err = chainlab.Contains(spend.Filter.FilterBytes, spend.Block.BlockHash(), fixture.WatchedScript)
+	results = append(results, resultFromBool("bip158.prevout_legacy_included", score.Must, matches && err == nil, err))
+
+	zero, err := zeroElementOPReturnCheck()
+	results = append(results, resultFromBool("bip158.zero_element_serialization", score.Must, zero && err == nil, err))
+	results = append(results, resultFromBool("bip158.op_return_excluded", score.Must, zero && err == nil, err))
+	return results
+}
+
+func zeroElementOPReturnCheck() (bool, error) {
+	opReturn := []byte{0x6a, 0x01, 0x01}
+	serialized, blockHash, err := chainlab.BuildSingleOutputFilter(opReturn)
+	if err != nil {
+		return false, err
+	}
+	matches, err := chainlab.Contains(serialized, blockHash, opReturn)
+	if err != nil {
+		return false, err
+	}
+	return len(serialized) == 1 && serialized[0] == 0 && !matches, nil
+}
+
+func resultFromBool(id string, level score.Level, ok bool, err error) score.Result {
+	status := score.Pass
+	evidence := "passed"
+	if !ok {
+		status = score.Fail
+		evidence = "failed"
+	}
+	if err != nil {
+		evidence = err.Error()
+	}
+	return score.Result{ID: id, Level: level, Status: status, Evidence: evidence}
+}
+
+func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	server := peerlab.NewServer(fixture)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer server.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	req := api.ConfigureRequest{
+		Network: "regtest",
+		DataDir: opts.DataDir,
+		Peers: []api.PeerConfig{{
+			ID:      "honest-a",
+			Address: server.Addr(),
+			Trusted: true,
+		}},
+		RequiredPeers:  1,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return nil, fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return nil, fmt.Errorf("start adapter: %w", err)
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	watch := api.WatchScriptRequest{
+		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
+		StartHeight:     0,
+	}
+	if err := client.PostJSON(ctx, "/watch-script", watch, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, err
+	}
+
+	var matches api.GetMatchesResponse
+	matchReq := api.GetMatchesRequest{
+		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
+		StartHeight:     0,
+		StopHeight:      tip.Height,
+	}
+	if err := client.PostJSON(ctx, "/matches", matchReq, &matches); err != nil {
+		return nil, fmt.Errorf("get matches: %w", err)
+	}
+	if len(matches.Matches) < len(fixture.Matches) {
+		return nil, fmt.Errorf("adapter reported %d matches, expected at least %d", len(matches.Matches), len(fixture.Matches))
+	}
+
+	return []score.Result{{
+		ID:       "adapter.honest_wallet_receive_spend",
+		Title:    "honest peer wallet receive and spend",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("reported %d matches", len(matches.Matches)),
+	}}, nil
+}
+
+type jsonPoster interface {
+	PostJSON(context.Context, string, any, any) error
+}
+
+func waitForAdapterTip(ctx context.Context, client jsonPoster, hash string, height uint32) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var best api.BlockRef
+		err := client.PostJSON(ctx, "/best-block", map[string]string{}, &best)
+		if err == nil && best.HashHex == hash && best.Height == height {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for adapter tip %d %s", height, hash)
+		case <-ticker.C:
+		}
+	}
+}
+
+func upsert(results *[]score.Result, replacements ...score.Result) {
+	index := map[string]int{}
+	for i, result := range *results {
+		index[result.ID] = i
+	}
+	for _, replacement := range replacements {
+		if i, ok := index[replacement.ID]; ok {
+			(*results)[i] = replacement
+			continue
+		}
+		*results = append(*results, replacement)
+	}
+}

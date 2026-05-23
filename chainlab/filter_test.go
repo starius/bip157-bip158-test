@@ -44,26 +44,7 @@ func TestBuildBasicFilterIncludesCoinbaseOutputs(t *testing.T) {
 
 func TestBuildBasicFilterExcludesOPReturn(t *testing.T) {
 	opReturn := []byte{0x6a, 0x01, 0x01}
-	block := &wire.MsgBlock{
-		Header: wire.BlockHeader{},
-		Transactions: []*wire.MsgTx{{
-			Version: 1,
-			TxIn: []*wire.TxIn{{
-				PreviousOutPoint: wire.OutPoint{
-					Hash:  chainhash.Hash{},
-					Index: 0xffffffff,
-				},
-				SignatureScript: []byte{0x01, 0x01},
-				Sequence:        0xffffffff,
-			}},
-			TxOut: []*wire.TxOut{{
-				Value:    0,
-				PkScript: opReturn,
-			}},
-		}},
-	}
-
-	_, serialized, err := BuildBasicFilter(block, nil)
+	serialized, _, err := BuildSingleOutputFilter(opReturn)
 	if err != nil {
 		t.Fatalf("build filter: %v", err)
 	}
