@@ -62,7 +62,7 @@ func TestFakeAdapterReportsFixtureMatches(t *testing.T) {
 }
 
 func TestHarnessPassesAgainstFakeAdapter(t *testing.T) {
-	fixture, err := chainlab.BuildWalletFixture()
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
 	if err != nil {
 		t.Fatalf("build fixture: %v", err)
 	}

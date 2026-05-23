@@ -40,6 +40,11 @@ type Fixture struct {
 	Matches       []MatchExpectation
 }
 
+// DefaultLongChainHeight crosses two compact-filter checkpoint intervals. It
+// is long enough to force real clients to exercise multiple header batches and
+// BIP157 checkpoint/range behavior without making local tests too expensive.
+const DefaultLongChainHeight uint32 = 2005
+
 // BuildWalletFixture creates a regtest chain that exercises the minimum wallet
 // behavior every BIP157/BIP158 client should get right: detect a watched output
 // and then detect a spend of that output through the prevout-script element.
@@ -149,6 +154,48 @@ func BuildWalletFixture() (*Fixture, error) {
 			Vin:          0,
 		}},
 	}, nil
+}
+
+// BuildLongWalletFixture extends the basic wallet fixture to targetHeight.
+// Extra blocks contain only coinbase transactions, which keeps the expected
+// wallet matches stable while creating enough chain length for BIP157 range and
+// checkpoint scenarios.
+func BuildLongWalletFixture(targetHeight uint32) (*Fixture, error) {
+	fixture, err := BuildWalletFixture()
+	if err != nil {
+		return nil, err
+	}
+	if targetHeight < fixture.Blocks[len(fixture.Blocks)-1].Height {
+		return nil, fmt.Errorf("target height %d is below wallet fixture tip", targetHeight)
+	}
+
+	prevHeader := fixture.Blocks[len(fixture.Blocks)-1].Filter.FilterHeader
+	prevHash := fixture.Blocks[len(fixture.Blocks)-1].Block.BlockHash()
+	for height := fixture.Blocks[len(fixture.Blocks)-1].Height + 1; height <= targetHeight; height++ {
+		block, err := mineBlock(fixture.Params, int32(height), prevHash, nil)
+		if err != nil {
+			return nil, err
+		}
+		material, err := BuildFilterMaterial(block, nil, prevHeader)
+		if err != nil {
+			return nil, err
+		}
+		fixture.Blocks = append(fixture.Blocks, BlockFixture{
+			Height: height,
+			Block:  block,
+			Filter: material,
+		})
+		prevHeader = material.FilterHeader
+		prevHash = block.BlockHash()
+	}
+	return fixture, nil
+}
+
+// MineFixtureBlock mines a single regtest block with the same deterministic
+// proof-of-work policy as the built-in fixtures. Harness checks use it to build
+// tiny one-off BIP158 vectors without duplicating block-construction code.
+func MineFixtureBlock(height int32, prevHash chainhash.Hash, txs []*wire.MsgTx) (*wire.MsgBlock, error) {
+	return mineBlock(&chaincfg.RegressionNetParams, height, prevHash, txs)
 }
 
 func cloneBlock(block *wire.MsgBlock) *wire.MsgBlock {

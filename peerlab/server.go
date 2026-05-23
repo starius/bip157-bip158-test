@@ -33,9 +33,11 @@ type TranscriptEntry struct {
 // Height maps use block heights from the fixture, not p2p message indexes.
 type Behavior struct {
 	CorruptCFHeaders   map[uint32]bool
+	CorruptCFCheckpts  map[uint32]bool
 	CorruptCFilters    map[uint32]bool
 	DelayByCommand     map[string]time.Duration
 	DelayOnceByCommand map[string]time.Duration
+	WrongFilterType    map[string]wire.FilterType
 }
 
 // Option customizes a peer simulator.
@@ -232,6 +234,9 @@ func (s *Server) headersResponse(req *wire.MsgGetHeaders) *wire.MsgHeaders {
 		if req.HashStop == s.fixture.Blocks[i].Block.BlockHash() {
 			break
 		}
+		if len(resp.Headers) == wire.MaxBlockHeadersPerMsg {
+			break
+		}
 	}
 	return resp
 }
@@ -246,7 +251,7 @@ func (s *Server) cfHeadersResponse(req *wire.MsgGetCFHeaders) (*wire.MsgCFHeader
 	}
 
 	resp := wire.NewMsgCFHeaders()
-	resp.FilterType = req.FilterType
+	resp.FilterType = s.responseFilterType("cfheaders", req.FilterType)
 	resp.StopHash = req.StopHash
 	if req.StartHeight > 0 {
 		resp.PrevFilterHeader = s.fixture.Blocks[req.StartHeight-1].Filter.FilterHeader
@@ -257,6 +262,9 @@ func (s *Server) cfHeadersResponse(req *wire.MsgGetCFHeaders) (*wire.MsgCFHeader
 			hash = corruptHash(hash)
 		}
 		_ = resp.AddCFHash(&hash)
+		if len(resp.FilterHashes) == wire.MaxCFHeadersPerMsg {
+			break
+		}
 	}
 	return resp, nil
 }
@@ -274,16 +282,25 @@ func (s *Server) cfiltersResponse(req *wire.MsgGetCFilters) ([]wire.Message, err
 		if s.behavior.CorruptCFilters[uint32(h)] {
 			data = corruptBytes(data)
 		}
-		out = append(out, wire.NewMsgCFilter(req.FilterType, &hash, data))
+		filterType := s.responseFilterType("cfilter", req.FilterType)
+		out = append(out, wire.NewMsgCFilter(filterType, &hash, data))
 	}
 	return out, nil
 }
 
 func (s *Server) cfCheckptResponse(req *wire.MsgGetCFCheckpt) *wire.MsgCFCheckpt {
-	resp := wire.NewMsgCFCheckpt(req.FilterType, &req.StopHash, 0)
+	filterType := s.responseFilterType("cfcheckpt", req.FilterType)
 	stopHeight := s.heightOf(req.StopHash)
+	headersCount := 0
+	if stopHeight > 0 {
+		headersCount = stopHeight / int(wire.CFCheckptInterval)
+	}
+	resp := wire.NewMsgCFCheckpt(filterType, &req.StopHash, headersCount)
 	for h := int(wire.CFCheckptInterval); h <= stopHeight; h += int(wire.CFCheckptInterval) {
 		header := s.fixture.Blocks[h].Filter.FilterHeader
+		if s.behavior.CorruptCFCheckpts[uint32(h)] {
+			header = corruptHash(header)
+		}
 		_ = resp.AddCFHeader(&header)
 	}
 	return resp
@@ -361,6 +378,8 @@ func summarize(msg wire.Message) string {
 		return fmt.Sprintf("start=%d stop=%s", m.StartHeight, m.StopHash)
 	case *wire.MsgGetCFilters:
 		return fmt.Sprintf("start=%d stop=%s", m.StartHeight, m.StopHash)
+	case *wire.MsgGetCFCheckpt:
+		return fmt.Sprintf("stop=%s", m.StopHash)
 	case *wire.MsgGetHeaders:
 		return fmt.Sprintf("%d locators stop=%s", len(m.BlockLocatorHashes), m.HashStop)
 	default:
@@ -389,9 +408,11 @@ func corruptBytes(data []byte) []byte {
 func cloneBehavior(behavior Behavior) Behavior {
 	return Behavior{
 		CorruptCFHeaders:   cloneBoolMap(behavior.CorruptCFHeaders),
+		CorruptCFCheckpts:  cloneBoolMap(behavior.CorruptCFCheckpts),
 		CorruptCFilters:    cloneBoolMap(behavior.CorruptCFilters),
 		DelayByCommand:     cloneDurationMap(behavior.DelayByCommand),
 		DelayOnceByCommand: cloneDurationMap(behavior.DelayOnceByCommand),
+		WrongFilterType:    cloneFilterTypeMap(behavior.WrongFilterType),
 	}
 }
 
@@ -419,6 +440,21 @@ func cloneDurationMap(in map[string]time.Duration) map[string]time.Duration {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneFilterTypeMap(in map[string]wire.FilterType) map[string]wire.FilterType {
+	out := make(map[string]wire.FilterType, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func (s *Server) responseFilterType(command string, requested wire.FilterType) wire.FilterType {
+	if filterType, ok := s.behavior.WrongFilterType[command]; ok {
+		return filterType
+	}
+	return requested
 }
 
 // WaitForMessage blocks until the transcript contains command or ctx expires.

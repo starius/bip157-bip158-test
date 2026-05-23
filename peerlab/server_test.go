@@ -62,6 +62,48 @@ func TestServerServesHeadersAndFilters(t *testing.T) {
 	}
 }
 
+func TestServerPaginatesLongHeadersAndServesCheckpoints(t *testing.T) {
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
+	if err != nil {
+		t.Fatalf("build long fixture: %v", err)
+	}
+	server := NewServer(fixture)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	getHeaders := wire.NewMsgGetHeaders()
+	genesis := fixture.Blocks[0].Block.BlockHash()
+	_ = getHeaders.AddBlockLocatorHash(&genesis)
+	if err := wire.WriteMessage(conn, getHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getheaders: %v", err)
+	}
+	headers := readMessageOf[*wire.MsgHeaders](t, conn, fixture)
+	if len(headers.Headers) != wire.MaxBlockHeadersPerMsg {
+		t.Fatalf("first headers page = %d, want %d", len(headers.Headers), wire.MaxBlockHeadersPerMsg)
+	}
+
+	stop := fixture.Blocks[len(fixture.Blocks)-1].Block.BlockHash()
+	getCheckpt := wire.NewMsgGetCFCheckpt(wire.GCSFilterRegular, &stop)
+	if err := wire.WriteMessage(conn, getCheckpt, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfcheckpt: %v", err)
+	}
+	checkpt := readMessageOf[*wire.MsgCFCheckpt](t, conn, fixture)
+	if len(checkpt.FilterHeaders) != 2 {
+		t.Fatalf("expected checkpoints at heights 1000 and 2000, got %d", len(checkpt.FilterHeaders))
+	}
+	if *checkpt.FilterHeaders[0] != fixture.Blocks[1000].Filter.FilterHeader {
+		t.Fatalf("first checkpoint header mismatch")
+	}
+	if *checkpt.FilterHeaders[1] != fixture.Blocks[2000].Filter.FilterHeader {
+		t.Fatalf("second checkpoint header mismatch")
+	}
+}
+
 func TestServerCanCorruptCFHeaders(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
@@ -116,6 +158,60 @@ func TestServerCanCorruptCFilter(t *testing.T) {
 	filter := readMessageOf[*wire.MsgCFilter](t, conn, fixture)
 	if chainlab.EqualBytes(filter.Data, fixture.Blocks[2].Filter.FilterBytes) {
 		t.Fatalf("height 2 filter bytes were not corrupted")
+	}
+}
+
+func TestServerCanCorruptCFCheckpt(t *testing.T) {
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
+	if err != nil {
+		t.Fatalf("build long fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptCFCheckpts: map[uint32]bool{1000: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[len(fixture.Blocks)-1].Block.BlockHash()
+	getCheckpt := wire.NewMsgGetCFCheckpt(wire.GCSFilterRegular, &stop)
+	if err := wire.WriteMessage(conn, getCheckpt, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfcheckpt: %v", err)
+	}
+	checkpt := readMessageOf[*wire.MsgCFCheckpt](t, conn, fixture)
+	if *checkpt.FilterHeaders[0] == fixture.Blocks[1000].Filter.FilterHeader {
+		t.Fatalf("first checkpoint header was not corrupted")
+	}
+}
+
+func TestServerCanSendWrongFilterType(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		WrongFilterType: map[string]wire.FilterType{"cfilter": 99},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getFilters := wire.NewMsgGetCFilters(wire.GCSFilterRegular, 2, &stop)
+	if err := wire.WriteMessage(conn, getFilters, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfilters: %v", err)
+	}
+	filter := readMessageOf[*wire.MsgCFilter](t, conn, fixture)
+	if filter.FilterType == wire.GCSFilterRegular {
+		t.Fatalf("filter type stayed regular")
 	}
 }
 

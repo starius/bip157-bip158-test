@@ -18,7 +18,7 @@ func main() {
 	flag.StringVar(&listen, "listen", "127.0.0.1:0", "HTTP listen address")
 	flag.Parse()
 
-	fixture, err := chainlab.BuildWalletFixture()
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build fixture: %v\n", err)
 		os.Exit(1)

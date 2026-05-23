@@ -12,6 +12,8 @@ import (
 	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/scenario"
 	"github.com/bip157-bip158-test/suite/score"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // Options configures one black-box conformance run.
@@ -37,44 +39,89 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	upsert(&results, runBIP158Internal(fixture)...)
 
 	if opts.AdapterURL != "" {
+		longFixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
+		if err != nil {
+			return score.Summary{}, err
+		}
 		for _, adapterScenario := range []struct {
-			id    string
-			title string
-			level score.Level
-			run   func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
+			id      string
+			title   string
+			level   score.Level
+			fixture *chainlab.Fixture
+			run     func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
 		}{
 			{
-				id:    "adapter.honest_wallet_receive_spend",
-				title: "honest peer wallet receive and spend",
-				level: score.Must,
-				run:   runHonestAdapter,
+				id:      "adapter.honest_wallet_receive_spend",
+				title:   "honest peer wallet receive and spend",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runHonestAdapter,
 			},
 			{
-				id:    "bip157.conflict_one_honest_one_liar",
-				title: "one honest and one liar filter-header conflict",
-				level: score.Should,
-				run:   runFilterHeaderConflictAdapter,
+				id:      "chain.long_checkpointed_header_sync",
+				title:   "long chain crosses compact-filter checkpoints",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runLongChainAdapter,
 			},
 			{
-				id:    "bip157.direct_bad_cfilter_ban",
-				title: "bad direct cfilter response is punished",
-				level: score.Should,
-				run:   runBadCFilterAdapter,
+				id:      "bip157.large_batch_progress_timeout",
+				title:   "large compact-filter batches make progress",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runLargeBatchProgressAdapter,
 			},
 			{
-				id:    "network.outage_filter_headers",
-				title: "temporary outage during filter-header sync recovers",
-				level: score.Must,
-				run:   runFilterHeaderOutageAdapter,
+				id:      "bip157.cfheaders_order_and_checkpoint_boundaries",
+				title:   "cfheaders ordering and checkpoint boundaries are handled",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runCFHeadersBoundaryAdapter,
 			},
 			{
-				id:    "network.outage_block_download",
-				title: "temporary outage during block download recovers",
-				level: score.Must,
-				run:   runBlockDownloadOutageAdapter,
+				id:      "bip157.conflict_one_honest_one_liar",
+				title:   "one honest and one liar filter-header conflict",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runFilterHeaderConflictAdapter,
+			},
+			{
+				id:      "bip157.direct_bad_cfilter_ban",
+				title:   "bad direct cfilter response is punished",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runBadCFilterAdapter,
+			},
+			{
+				id:      "bip157.bad_cfcheckpt_response",
+				title:   "bad compact-filter checkpoint response is rejected or punished",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runBadCFCheckptAdapter,
+			},
+			{
+				id:      "bip157.wrong_filter_type_response",
+				title:   "wrong filter type responses are rejected or punished",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runWrongFilterTypeAdapter,
+			},
+			{
+				id:      "network.outage_filter_headers",
+				title:   "temporary outage during filter-header sync recovers",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runFilterHeaderOutageAdapter,
+			},
+			{
+				id:      "network.outage_block_download",
+				title:   "temporary outage during block download recovers",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runBlockDownloadOutageAdapter,
 			},
 		} {
-			adapterResults, err := adapterScenario.run(ctx, opts, fixture)
+			adapterResults, err := adapterScenario.run(ctx, opts, adapterScenario.fixture)
 			if err != nil {
 				upsert(&results, score.Result{
 					ID:       adapterScenario.id,
@@ -121,14 +168,69 @@ func runBIP158Internal(fixture *chainlab.Fixture) []score.Result {
 	matches, err := chainlab.Contains(coinbase.Filter.FilterBytes, coinbase.Block.BlockHash(), coinbaseScript)
 	results = append(results, resultFromBool("bip158.coinbase_output_included", score.Must, matches && err == nil, err))
 
-	spend := fixture.Blocks[2]
-	matches, err = chainlab.Contains(spend.Filter.FilterBytes, spend.Block.BlockHash(), fixture.WatchedScript)
-	results = append(results, resultFromBool("bip158.prevout_legacy_included", score.Must, matches && err == nil, err))
+	legacy, err := prevoutScriptIncluded([]byte{
+		0x76, 0xa9, 0x14,
+		0x22, 0x22, 0x22, 0x22, 0x22,
+		0x22, 0x22, 0x22, 0x22, 0x22,
+		0x22, 0x22, 0x22, 0x22, 0x22,
+		0x22, 0x22, 0x22, 0x22, 0x22,
+		0x88, 0xac,
+	})
+	results = append(results, resultFromBool("bip158.prevout_legacy_included", score.Must, legacy && err == nil, err))
+
+	taproot, err := prevoutScriptIncluded(append([]byte{0x51, 0x20}, bytesOf(0x33, 32)...))
+	results = append(results, resultFromBool("bip158.prevout_taproot_included", score.Must, taproot && err == nil, err))
 
 	zero, err := zeroElementOPReturnCheck()
 	results = append(results, resultFromBool("bip158.zero_element_serialization", score.Must, zero && err == nil, err))
 	results = append(results, resultFromBool("bip158.op_return_excluded", score.Must, zero && err == nil, err))
+	results = append(results, resultFromBool("bip158.empty_filter_wire_forms", score.Must, zero && err == nil, err))
+
+	fullScript, err := fullScriptNotPushDataCheck()
+	results = append(results, resultFromBool("bip158.full_script_not_pushdata", score.Must, fullScript && err == nil, err))
 	return results
+}
+
+func prevoutScriptIncluded(script []byte) (bool, error) {
+	tx := &wire.MsgTx{
+		Version: 2,
+		TxIn: []*wire.TxIn{{
+			PreviousOutPoint: wire.OutPoint{Index: 0},
+			SignatureScript:  []byte{0x01, 0x01},
+			Sequence:         0xffffffff,
+		}},
+		TxOut: []*wire.TxOut{{
+			Value:    1,
+			PkScript: []byte{0x51},
+		}},
+	}
+	block, err := chainlab.MineFixtureBlock(1, chainhash.Hash{}, []*wire.MsgTx{tx})
+	if err != nil {
+		return false, err
+	}
+	material, err := chainlab.BuildFilterMaterial(block, [][]byte{script}, chainhash.Hash{})
+	if err != nil {
+		return false, err
+	}
+	return chainlab.Contains(material.FilterBytes, block.BlockHash(), script)
+}
+
+func fullScriptNotPushDataCheck() (bool, error) {
+	pushed := bytesOf(0x44, 20)
+	script := append([]byte{0x00, 0x14}, pushed...)
+	serialized, blockHash, err := chainlab.BuildSingleOutputFilter(script)
+	if err != nil {
+		return false, err
+	}
+	fullMatch, err := chainlab.Contains(serialized, blockHash, script)
+	if err != nil {
+		return false, err
+	}
+	pushOnlyMatch, err := chainlab.Contains(serialized, blockHash, pushed)
+	if err != nil {
+		return false, err
+	}
+	return fullMatch && !pushOnlyMatch, nil
 }
 
 func zeroElementOPReturnCheck() (bool, error) {
@@ -142,6 +244,14 @@ func zeroElementOPReturnCheck() (bool, error) {
 		return false, err
 	}
 	return len(serialized) == 1 && serialized[0] == 0 && !matches, nil
+}
+
+func bytesOf(value byte, count int) []byte {
+	out := make([]byte, count)
+	for i := range out {
+		out[i] = value
+	}
+	return out
 }
 
 func resultFromBool(id string, level score.Level, ok bool, err error) score.Result {
@@ -218,6 +328,104 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 	}}, nil
 }
 
+func runLongChainAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	server := peerlab.NewServer(fixture)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer server.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "long-chain",
+		Address: server.Addr(),
+		Trusted: true,
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("long-chain", server))
+	}
+	return []score.Result{{
+		ID:       "chain.long_checkpointed_header_sync",
+		Title:    "long chain crosses compact-filter checkpoints",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("adapter reached long-chain tip height %d; %s", tip.Height, transcriptCounts(server)),
+	}}, nil
+}
+
+func runLargeBatchProgressAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	server := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		DelayOnceByCommand: map[string]time.Duration{"cfheaders": recoverableDelay(opts)},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer server.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "large-batch",
+		Address: server.Addr(),
+		Trusted: true,
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("large-batch", server))
+	}
+	return []score.Result{{
+		ID:       "bip157.large_batch_progress_timeout",
+		Title:    "large compact-filter batches make progress",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("adapter reached height %d after delayed large-batch response; %s", tip.Height, transcriptCounts(server)),
+	}}, nil
+}
+
+func runCFHeadersBoundaryAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	server := peerlab.NewServer(fixture)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer server.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "cfheaders-boundary",
+		Address: server.Addr(),
+		Trusted: true,
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("cfheaders-boundary", server))
+	}
+	return []score.Result{{
+		ID:       "bip157.cfheaders_order_and_checkpoint_boundaries",
+		Title:    "cfheaders ordering and checkpoint boundaries are handled",
+		Level:    score.Must,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("adapter reached height %d across checkpoint boundaries; %s", tip.Height, transcriptCounts(server)),
+	}}, nil
+}
+
 func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	honest := peerlab.NewServer(fixture)
 	if err := honest.Start("127.0.0.1:0"); err != nil {
@@ -277,6 +485,100 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 		return nil, fmt.Errorf("%w; %s; %s", waitErr, transcriptSummary("honest-cfheaders", honest), transcriptSummary("liar-cfheaders", liar))
 	}
 	return nil, fmt.Errorf("liar-cfheaders was not punished after conflicting filter headers")
+}
+
+func runBadCFCheckptAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		CorruptCFCheckpts: map[uint32]bool{1000: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-cfcheckpt",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunished(peers, "bad-cfcheckpt"); ok {
+		return []score.Result{{
+			ID:       "bip157.bad_cfcheckpt_response",
+			Title:    "bad compact-filter checkpoint response is rejected or punished",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("%w; %s", waitErr, transcriptSummary("bad-cfcheckpt", bad))
+	}
+	return nil, fmt.Errorf("bad-cfcheckpt was not punished after serving a corrupt checkpoint")
+}
+
+func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		WrongFilterType: map[string]wire.FilterType{
+			"cfilter":   99,
+			"cfheaders": 99,
+		},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-filter-type",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	if err := client.PostJSON(ctx, "/watch-script", api.WatchScriptRequest{
+		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
+		StartHeight:     0,
+	}, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunished(peers, "bad-filter-type"); ok {
+		return []score.Result{{
+			ID:       "bip157.wrong_filter_type_response",
+			Title:    "wrong filter type responses are rejected or punished",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	if waitErr != nil {
+		return nil, fmt.Errorf("%w; %s", waitErr, transcriptSummary("bad-filter-type", bad))
+	}
+	return nil, fmt.Errorf("bad-filter-type was not punished after wrong filter type responses")
 }
 
 func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
@@ -443,6 +745,23 @@ func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *c
 	}}, nil
 }
 
+func configureAndStart(ctx context.Context, client *api.Client, opts Options, peers []api.PeerConfig, requiredPeers uint32) error {
+	req := api.ConfigureRequest{
+		Network:        "regtest",
+		DataDir:        opts.DataDir,
+		Peers:          peers,
+		RequiredPeers:  requiredPeers,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return fmt.Errorf("start adapter: %w", err)
+	}
+	return nil
+}
+
 func recoverableDelay(opts Options) time.Duration {
 	if opts.Timeout > 2*time.Second {
 		return 500 * time.Millisecond
@@ -467,6 +786,38 @@ func transcriptSummary(label string, server *peerlab.Server) string {
 		parts = append(parts, fmt.Sprintf("%s/%s/%s/%s", label, entry.Dir, entry.Command, entry.Summary))
 	}
 	return "peer transcript: " + strings.Join(parts, "; ")
+}
+
+func transcriptCounts(server *peerlab.Server) string {
+	counts := map[string]int{}
+	for _, entry := range server.Transcript() {
+		counts[entry.Command]++
+	}
+	if len(counts) == 0 {
+		return "no p2p transcript"
+	}
+	commands := []string{
+		"getheaders",
+		"headers",
+		"getcfcheckpt",
+		"cfcheckpt",
+		"getcfheaders",
+		"cfheaders",
+		"getcfilters",
+		"cfilter",
+		"getdata",
+		"block",
+	}
+	parts := make([]string, 0, len(commands))
+	for _, command := range commands {
+		if counts[command] > 0 {
+			parts = append(parts, fmt.Sprintf("%s=%d", command, counts[command]))
+		}
+	}
+	if len(parts) == 0 {
+		return "no BIP157 transcript entries"
+	}
+	return strings.Join(parts, " ")
 }
 
 func peerPunished(peers api.ListPeersResponse, id string) (bool, string) {

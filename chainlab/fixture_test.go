@@ -45,3 +45,25 @@ func TestWalletFixtureFiltersMatchWatchedScript(t *testing.T) {
 		t.Fatalf("spend block filter does not match watched prevout script")
 	}
 }
+
+func TestBuildLongWalletFixtureCrossesCheckpoints(t *testing.T) {
+	fixture, err := BuildLongWalletFixture(DefaultLongChainHeight)
+	if err != nil {
+		t.Fatalf("build long fixture: %v", err)
+	}
+	if got := fixture.Blocks[len(fixture.Blocks)-1].Height; got != DefaultLongChainHeight {
+		t.Fatalf("tip height = %d, want %d", got, DefaultLongChainHeight)
+	}
+	if len(fixture.Matches) != 2 {
+		t.Fatalf("long fixture should keep wallet matches stable, got %d", len(fixture.Matches))
+	}
+	for _, height := range []uint32{1000, 2000} {
+		block := fixture.Blocks[height]
+		if block.Height != height {
+			t.Fatalf("block index %d has height %d", height, block.Height)
+		}
+		if block.Filter.FilterHeader.IsEqual(&fixture.Blocks[height-1].Filter.FilterHeader) {
+			t.Fatalf("checkpoint height %d unexpectedly reused previous filter header", height)
+		}
+	}
+}
