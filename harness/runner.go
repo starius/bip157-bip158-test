@@ -36,17 +36,43 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	upsert(&results, runBIP158Internal(fixture)...)
 
 	if opts.AdapterURL != "" {
-		adapterResults, err := runHonestAdapter(ctx, opts, fixture)
-		if err != nil {
-			upsert(&results, score.Result{
-				ID:       "adapter.honest_wallet_receive_spend",
-				Title:    "honest peer wallet receive and spend",
-				Level:    score.Must,
-				Status:   score.Fail,
-				Evidence: err.Error(),
-			})
-		} else {
-			upsert(&results, adapterResults...)
+		for _, adapterScenario := range []struct {
+			id    string
+			title string
+			level score.Level
+			run   func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
+		}{
+			{
+				id:    "adapter.honest_wallet_receive_spend",
+				title: "honest peer wallet receive and spend",
+				level: score.Must,
+				run:   runHonestAdapter,
+			},
+			{
+				id:    "bip157.conflict_one_honest_one_liar",
+				title: "one honest and one liar filter-header conflict",
+				level: score.Should,
+				run:   runFilterHeaderConflictAdapter,
+			},
+			{
+				id:    "bip157.direct_bad_cfilter_ban",
+				title: "bad direct cfilter response is punished",
+				level: score.Should,
+				run:   runBadCFilterAdapter,
+			},
+		} {
+			adapterResults, err := adapterScenario.run(ctx, opts, fixture)
+			if err != nil {
+				upsert(&results, score.Result{
+					ID:       adapterScenario.id,
+					Title:    adapterScenario.title,
+					Level:    adapterScenario.level,
+					Status:   score.Fail,
+					Evidence: err.Error(),
+				})
+			} else {
+				upsert(&results, adapterResults...)
+			}
 		}
 	}
 
@@ -180,6 +206,140 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 		Status:   score.Pass,
 		Evidence: fmt.Sprintf("reported %d matches", len(matches.Matches)),
 	}}, nil
+}
+
+func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	honest := peerlab.NewServer(fixture)
+	if err := honest.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer honest.Stop()
+
+	liar := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		CorruptCFHeaders: map[uint32]bool{2: true},
+	}))
+	if err := liar.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer liar.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	req := api.ConfigureRequest{
+		Network: "regtest",
+		DataDir: opts.DataDir,
+		Peers: []api.PeerConfig{{
+			ID:      "honest-cfheaders",
+			Address: honest.Addr(),
+		}, {
+			ID:      "liar-cfheaders",
+			Address: liar.Addr(),
+		}},
+		RequiredPeers:  2,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return nil, fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return nil, fmt.Errorf("start adapter: %w", err)
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunished(peers, "liar-cfheaders"); ok {
+		return []score.Result{{
+			ID:       "bip157.conflict_one_honest_one_liar",
+			Title:    "one honest and one liar filter-header conflict",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	return nil, fmt.Errorf("liar-cfheaders was not punished after conflicting filter headers")
+}
+
+func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		CorruptCFilters: map[uint32]bool{2: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	req := api.ConfigureRequest{
+		Network: "regtest",
+		DataDir: opts.DataDir,
+		Peers: []api.PeerConfig{{
+			ID:      "bad-cfilter",
+			Address: bad.Addr(),
+		}},
+		RequiredPeers:  1,
+		AllowDiscovery: false,
+	}
+	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
+		return nil, fmt.Errorf("configure adapter: %w", err)
+	}
+	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
+		return nil, fmt.Errorf("start adapter: %w", err)
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	watch := api.WatchScriptRequest{
+		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
+		StartHeight:     0,
+	}
+	if err := client.PostJSON(ctx, "/watch-script", watch, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunished(peers, "bad-cfilter"); ok {
+		return []score.Result{{
+			ID:       "bip157.direct_bad_cfilter_ban",
+			Title:    "bad direct cfilter response is punished",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	if waitErr != nil {
+		return nil, waitErr
+	}
+	return nil, fmt.Errorf("bad-cfilter was not punished after serving a corrupt filter")
+}
+
+func peerPunished(peers api.ListPeersResponse, id string) (bool, string) {
+	for _, peer := range peers.Peers {
+		if peer.ID != id {
+			continue
+		}
+		if peer.Banned || !peer.Connected || peer.LastError != "" {
+			return true, fmt.Sprintf("peer=%s connected=%t banned=%t last_error=%q", peer.ID, peer.Connected, peer.Banned, peer.LastError)
+		}
+		return false, fmt.Sprintf("peer=%s connected=%t banned=%t last_error=%q", peer.ID, peer.Connected, peer.Banned, peer.LastError)
+	}
+	return false, "peer not reported"
 }
 
 type jsonPoster interface {

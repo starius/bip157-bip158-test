@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/bip157-bip158-test/suite/api"
@@ -211,16 +212,29 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 	tip := s.fixture.Blocks[len(s.fixture.Blocks)-1]
 	states := make([]api.PeerState, 0, len(peers))
 	for _, peer := range peers {
+		adversarial := fakeAdversarialPeer(peer.ID)
 		states = append(states, api.PeerState{
 			ID:          peer.ID,
 			Address:     peer.Address,
-			Connected:   started,
-			Banned:      false,
+			Connected:   started && !adversarial,
+			Banned:      started && adversarial,
+			LastError:   fakePeerError(adversarial),
 			BestHeight:  tip.Height,
 			BestHashHex: tip.Block.BlockHash().String(),
 		})
 	}
 	writeJSON(w, api.ListPeersResponse{Peers: states})
+}
+
+func fakeAdversarialPeer(id string) bool {
+	return strings.Contains(id, "liar") || strings.Contains(id, "bad")
+}
+
+func fakePeerError(adversarial bool) string {
+	if adversarial {
+		return "simulated deterministic fault"
+	}
+	return ""
 }
 
 func requirePost(w http.ResponseWriter, r *http.Request) bool {
