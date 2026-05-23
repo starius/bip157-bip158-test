@@ -227,7 +227,9 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 }
 
 func fakeAdversarialPeer(id string) bool {
-	return strings.Contains(id, "liar") || strings.Contains(id, "bad")
+	return strings.Contains(id, "liar") ||
+		strings.Contains(id, "bad") ||
+		strings.Contains(id, "unresponsive")
 }
 
 func fakePeerError(adversarial bool) string {

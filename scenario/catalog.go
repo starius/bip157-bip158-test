@@ -137,7 +137,10 @@ func neutrinoBaseline() []Definition {
 func conformanceScenarios() []Definition {
 	return []Definition{
 		{ID: "bip158.coinbase_output_included", Title: "coinbase output is included in basic filter", Level: score.Must, Source: SourceConformance},
+		{ID: "bip158.coinbase_input_excluded", Title: "coinbase input script is excluded from basic filter", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.prevout_legacy_included", Title: "legacy input prevout script is included", Level: score.Must, Source: SourceConformance},
+		{ID: "bip158.prevout_p2sh_included", Title: "P2SH input prevout script is included", Level: score.Must, Source: SourceConformance},
+		{ID: "bip158.prevout_p2wsh_included", Title: "P2WSH input prevout script is included", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.prevout_taproot_included", Title: "taproot input prevout script is included", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.op_return_excluded", Title: "OP_RETURN outputs are excluded", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.zero_element_serialization", Title: "zero-element filter is one zero byte", Level: score.Must, Source: SourceConformance},
@@ -148,6 +151,7 @@ func conformanceScenarios() []Definition {
 		{ID: "bip157.cfheaders_order_and_checkpoint_boundaries", Title: "cfheaders ordering and checkpoint boundaries are handled", Level: score.Must, Source: SourceConformance},
 		{ID: "bip157.wrong_filter_type_response", Title: "wrong filter type responses are rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.bad_cfcheckpt_response", Title: "bad compact-filter checkpoint response is rejected or punished", Level: score.Should, Source: SourceConformance},
+		{ID: "bip157.bad_cfheaders_prev_header", Title: "bad compact-filter previous header is rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.conflict_one_honest_one_liar", Title: "one honest and one liar filter-header conflict", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.direct_bad_cfilter_ban", Title: "bad direct cfilter response is punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.self_consistent_eclipse", Title: "self-consistent malicious filter chain is reported as trust limitation", Level: score.Should, Source: SourceConformance},

@@ -134,6 +134,33 @@ func TestServerCanCorruptCFHeaders(t *testing.T) {
 	}
 }
 
+func TestServerCanCorruptPrevFilterHeader(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptPrevFilterHeader: map[uint32]bool{1: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getCFHeaders := wire.NewMsgGetCFHeaders(wire.GCSFilterRegular, 1, &stop)
+	if err := wire.WriteMessage(conn, getCFHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfheaders: %v", err)
+	}
+	cfHeaders := readMessageOf[*wire.MsgCFHeaders](t, conn, fixture)
+	if cfHeaders.PrevFilterHeader == fixture.Blocks[0].Filter.FilterHeader {
+		t.Fatalf("previous filter header was not corrupted")
+	}
+}
+
 func TestServerCanCorruptCFilter(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {

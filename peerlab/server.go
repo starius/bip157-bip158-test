@@ -32,12 +32,13 @@ type TranscriptEntry struct {
 // Behavior describes deterministic faults a scenario wants the peer to inject.
 // Height maps use block heights from the fixture, not p2p message indexes.
 type Behavior struct {
-	CorruptCFHeaders   map[uint32]bool
-	CorruptCFCheckpts  map[uint32]bool
-	CorruptCFilters    map[uint32]bool
-	DelayByCommand     map[string]time.Duration
-	DelayOnceByCommand map[string]time.Duration
-	WrongFilterType    map[string]wire.FilterType
+	CorruptCFHeaders        map[uint32]bool
+	CorruptCFCheckpts       map[uint32]bool
+	CorruptCFilters         map[uint32]bool
+	CorruptPrevFilterHeader map[uint32]bool
+	DelayByCommand          map[string]time.Duration
+	DelayOnceByCommand      map[string]time.Duration
+	WrongFilterType         map[string]wire.FilterType
 }
 
 // Option customizes a peer simulator.
@@ -256,6 +257,9 @@ func (s *Server) cfHeadersResponse(req *wire.MsgGetCFHeaders) (*wire.MsgCFHeader
 	if req.StartHeight > 0 {
 		resp.PrevFilterHeader = s.fixture.Blocks[req.StartHeight-1].Filter.FilterHeader
 	}
+	if s.behavior.CorruptPrevFilterHeader[req.StartHeight] {
+		resp.PrevFilterHeader = corruptHash(resp.PrevFilterHeader)
+	}
 	for h := int(req.StartHeight); h <= stopHeight; h++ {
 		hash := s.fixture.Blocks[h].Filter.FilterHash
 		if s.behavior.CorruptCFHeaders[uint32(h)] {
@@ -407,12 +411,13 @@ func corruptBytes(data []byte) []byte {
 
 func cloneBehavior(behavior Behavior) Behavior {
 	return Behavior{
-		CorruptCFHeaders:   cloneBoolMap(behavior.CorruptCFHeaders),
-		CorruptCFCheckpts:  cloneBoolMap(behavior.CorruptCFCheckpts),
-		CorruptCFilters:    cloneBoolMap(behavior.CorruptCFilters),
-		DelayByCommand:     cloneDurationMap(behavior.DelayByCommand),
-		DelayOnceByCommand: cloneDurationMap(behavior.DelayOnceByCommand),
-		WrongFilterType:    cloneFilterTypeMap(behavior.WrongFilterType),
+		CorruptCFHeaders:        cloneBoolMap(behavior.CorruptCFHeaders),
+		CorruptCFCheckpts:       cloneBoolMap(behavior.CorruptCFCheckpts),
+		CorruptCFilters:         cloneBoolMap(behavior.CorruptCFilters),
+		CorruptPrevFilterHeader: cloneBoolMap(behavior.CorruptPrevFilterHeader),
+		DelayByCommand:          cloneDurationMap(behavior.DelayByCommand),
+		DelayOnceByCommand:      cloneDurationMap(behavior.DelayOnceByCommand),
+		WrongFilterType:         cloneFilterTypeMap(behavior.WrongFilterType),
 	}
 }
 
