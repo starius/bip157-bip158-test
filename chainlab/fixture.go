@@ -45,7 +45,14 @@ type Fixture struct {
 // and then detect a spend of that output through the prevout-script element.
 func BuildWalletFixture() (*Fixture, error) {
 	params := &chaincfg.RegressionNetParams
-	watched := []byte{0x51} // OP_TRUE; simple, standardness is irrelevant here.
+	// A deterministic P2WPKH script keeps the fixture standard enough for
+	// wallet-style APIs while still avoiding any private key dependency.
+	watched := append([]byte{0x00, 0x14}, []byte{
+		0x11, 0x11, 0x11, 0x11, 0x11,
+		0x11, 0x11, 0x11, 0x11, 0x11,
+		0x11, 0x11, 0x11, 0x11, 0x11,
+		0x11, 0x11, 0x11, 0x11, 0x11,
+	}...)
 	anyone := []byte{0x51}
 
 	genesis := cloneBlock(params.GenesisBlock)
