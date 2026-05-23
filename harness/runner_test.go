@@ -67,3 +67,26 @@ func TestTranscriptSummaryHandlesEmptyTranscript(t *testing.T) {
 		t.Fatalf("unexpected summary: %s", summary)
 	}
 }
+
+func TestPeerPunishedAfterRequiresObservedBadResponse(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := peerlab.NewServer(fixture)
+	peers := api.ListPeersResponse{Peers: []api.PeerState{{
+		ID:        "bad-peer",
+		Connected: false,
+		Banned:    false,
+		LastError: "not connected",
+	}}}
+
+	if ok, evidence := peerPunishedAfter(peers, "bad-peer", server, "cfilter"); ok {
+		t.Fatalf("generic disconnect without bad response should not pass: %s", evidence)
+	}
+
+	peers.Peers[0].Banned = true
+	if ok, evidence := peerPunishedAfter(peers, "bad-peer", server, "cfilter"); !ok {
+		t.Fatalf("explicit ban should pass without transcript: %s", evidence)
+	}
+}

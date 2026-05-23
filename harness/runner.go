@@ -655,7 +655,7 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
-	if ok, evidence := peerPunished(peers, "liar-cfheaders"); ok {
+	if ok, evidence := peerPunishedAfter(peers, "liar-cfheaders", liar, "cfheaders"); ok {
 		return filterHeaderConflictResults(score.Pass, evidence), nil
 	}
 	evidence := "liar-cfheaders was not punished after conflicting filter headers"
@@ -708,7 +708,7 @@ func runBadCFCheckptAdapter(ctx context.Context, opts Options, fixture *chainlab
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
-	if ok, evidence := peerPunished(peers, "bad-cfcheckpt"); ok {
+	if ok, evidence := peerPunishedAfter(peers, "bad-cfcheckpt", bad, "cfcheckpt"); ok {
 		return badCFCheckptResults(score.Pass, evidence), nil
 	}
 	evidence := "bad-cfcheckpt was not punished after serving a corrupt checkpoint"
@@ -761,7 +761,7 @@ func runBadPrevFilterHeaderAdapter(ctx context.Context, opts Options, fixture *c
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
-	if ok, evidence := peerPunished(peers, "bad-prev-filter-header"); ok {
+	if ok, evidence := peerPunishedAfter(peers, "bad-prev-filter-header", bad, "cfheaders"); ok {
 		return badPrevFilterHeaderResults(score.Pass, evidence), nil
 	}
 	evidence := "bad-prev-filter-header was not punished after serving a corrupt previous filter header"
@@ -824,7 +824,7 @@ func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chain
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
-	if ok, evidence := peerPunished(peers, "bad-filter-type"); ok {
+	if ok, evidence := peerPunishedAfter(peers, "bad-filter-type", bad, "cfheaders", "cfilter"); ok {
 		return []score.Result{{
 			ID:       "bip157.wrong_filter_type_response",
 			Title:    "wrong filter type responses are rejected or punished",
@@ -884,7 +884,7 @@ func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.F
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
-	if ok, evidence := peerPunished(peers, "bad-cfilter"); ok {
+	if ok, evidence := peerPunishedAfter(peers, "bad-cfilter", bad, "cfilter"); ok {
 		return badCFilterResults(score.Pass, evidence), nil
 	}
 	evidence := "bad-cfilter was not punished after serving a corrupt filter"
@@ -1193,6 +1193,43 @@ func peerPunished(peers api.ListPeersResponse, id string) (bool, string) {
 		return false, fmt.Sprintf("peer=%s connected=%t banned=%t last_error=%q", peer.ID, peer.Connected, peer.Banned, peer.LastError)
 	}
 	return false, "peer not reported"
+}
+
+func peerPunishedAfter(peers api.ListPeersResponse, id string, server *peerlab.Server, commands ...string) (bool, string) {
+	observed := transcriptHasOutbound(server, commands...)
+	for _, peer := range peers.Peers {
+		if peer.ID != id {
+			continue
+		}
+		evidence := fmt.Sprintf("peer=%s connected=%t banned=%t last_error=%q", peer.ID, peer.Connected, peer.Banned, peer.LastError)
+		if peer.Banned {
+			return true, evidence
+		}
+		if observed && (!peer.Connected || peer.LastError != "") {
+			return true, evidence
+		}
+		if !observed {
+			return false, evidence + "; bad response was not observed; " + transcriptSummary(id, server)
+		}
+		return false, evidence
+	}
+	return false, "peer not reported"
+}
+
+func transcriptHasOutbound(server *peerlab.Server, commands ...string) bool {
+	want := map[string]struct{}{}
+	for _, command := range commands {
+		want[command] = struct{}{}
+	}
+	for _, entry := range server.Transcript() {
+		if entry.Dir != "out" {
+			continue
+		}
+		if _, ok := want[entry.Command]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 type jsonPoster interface {
