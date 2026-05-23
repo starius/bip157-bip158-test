@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bip157-bip158-test/suite/api"
@@ -195,7 +196,7 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("honest-a", server))
 	}
 
 	var matches api.GetMatchesResponse
@@ -276,7 +277,7 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 		}}, nil
 	}
 	if waitErr != nil {
-		return nil, waitErr
+		return nil, fmt.Errorf("%w; %s; %s", waitErr, transcriptSummary("honest-cfheaders", honest), transcriptSummary("liar-cfheaders", liar))
 	}
 	return nil, fmt.Errorf("liar-cfheaders was not punished after conflicting filter headers")
 }
@@ -336,7 +337,7 @@ func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.F
 		}}, nil
 	}
 	if waitErr != nil {
-		return nil, waitErr
+		return nil, fmt.Errorf("%w; %s", waitErr, transcriptSummary("bad-cfilter", bad))
 	}
 	return nil, fmt.Errorf("bad-cfilter was not punished after serving a corrupt filter")
 }
@@ -373,7 +374,7 @@ func runFilterHeaderOutageAdapter(ctx context.Context, opts Options, fixture *ch
 	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("flaky-cfheaders", peer))
 	}
 	return []score.Result{{
 		ID:       "network.outage_filter_headers",
@@ -424,7 +425,7 @@ func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *c
 	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
 	if err := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("flaky-block", peer))
 	}
 
 	var matches api.GetMatchesResponse
@@ -456,6 +457,22 @@ func recoverableDelay(opts Options) time.Duration {
 		return opts.Timeout / 4
 	}
 	return 50 * time.Millisecond
+}
+
+func transcriptSummary(label string, server *peerlab.Server) string {
+	entries := server.Transcript()
+	if len(entries) == 0 {
+		return label + " transcript: empty"
+	}
+	const maxEntries = 8
+	if len(entries) > maxEntries {
+		entries = entries[len(entries)-maxEntries:]
+	}
+	parts := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		parts = append(parts, fmt.Sprintf("%s/%s/%s/%s", label, entry.Dir, entry.Command, entry.Summary))
+	}
+	return "peer transcript: " + strings.Join(parts, "; ")
 }
 
 func peerPunished(peers api.ListPeersResponse, id string) (bool, string) {

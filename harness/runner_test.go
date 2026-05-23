@@ -2,9 +2,12 @@ package harness
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/score"
 )
 
@@ -42,3 +45,15 @@ func TestWaitForAdapterTipTimesOut(t *testing.T) {
 type nilClient struct{}
 
 func (nilClient) PostJSON(context.Context, string, any, any) error { return context.DeadlineExceeded }
+
+func TestTranscriptSummaryHandlesEmptyTranscript(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := peerlab.NewServer(fixture)
+	summary := transcriptSummary("peer-a", server)
+	if !strings.Contains(summary, "peer-a transcript: empty") {
+		t.Fatalf("unexpected summary: %s", summary)
+	}
+}
