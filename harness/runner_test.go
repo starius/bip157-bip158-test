@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
 	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/score"
@@ -37,6 +38,15 @@ func TestWaitForAdapterTipTimesOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 	err := waitForAdapterTip(ctx, nilClient{}, "", 0)
+	if err == nil {
+		t.Fatalf("expected timeout")
+	}
+}
+
+func TestWaitForMatchesTimesOut(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err := waitForMatches(ctx, nilClient{}, api.GetMatchesRequest{}, 1)
 	if err == nil {
 		t.Fatalf("expected timeout")
 	}

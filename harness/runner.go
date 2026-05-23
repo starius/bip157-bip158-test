@@ -199,17 +199,14 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("honest-a", server))
 	}
 
-	var matches api.GetMatchesResponse
 	matchReq := api.GetMatchesRequest{
 		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
 		StartHeight:     0,
 		StopHeight:      tip.Height,
 	}
-	if err := client.PostJSON(ctx, "/matches", matchReq, &matches); err != nil {
-		return nil, fmt.Errorf("get matches: %w", err)
-	}
-	if len(matches.Matches) < len(fixture.Matches) {
-		return nil, fmt.Errorf("adapter reported %d matches, expected at least %d", len(matches.Matches), len(fixture.Matches))
+	matches, err := waitForMatches(waitCtx, client, matchReq, len(fixture.Matches))
+	if err != nil {
+		return nil, err
 	}
 
 	return []score.Result{{
@@ -428,16 +425,13 @@ func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *c
 		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("flaky-block", peer))
 	}
 
-	var matches api.GetMatchesResponse
-	if err := client.PostJSON(ctx, "/matches", api.GetMatchesRequest{
+	matches, err := waitForMatches(waitCtx, client, api.GetMatchesRequest{
 		ScriptPubKeyHex: scriptHex,
 		StartHeight:     0,
 		StopHeight:      tip.Height,
-	}, &matches); err != nil {
-		return nil, fmt.Errorf("get matches: %w", err)
-	}
-	if len(matches.Matches) < len(fixture.Matches) {
-		return nil, fmt.Errorf("adapter reported %d matches after block-delay recovery, expected at least %d", len(matches.Matches), len(fixture.Matches))
+	}, len(fixture.Matches))
+	if err != nil {
+		return nil, fmt.Errorf("%w after block-delay recovery", err)
 	}
 
 	return []score.Result{{
@@ -504,6 +498,23 @@ func waitForAdapterTip(ctx context.Context, client jsonPoster, hash string, heig
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timed out waiting for adapter tip %d %s", height, hash)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForMatches(ctx context.Context, client jsonPoster, req api.GetMatchesRequest, want int) (api.GetMatchesResponse, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var last api.GetMatchesResponse
+	for {
+		err := client.PostJSON(ctx, "/matches", req, &last)
+		if err == nil && len(last.Matches) >= want {
+			return last, nil
+		}
+		select {
+		case <-ctx.Done():
+			return last, fmt.Errorf("adapter reported %d matches, expected at least %d", len(last.Matches), want)
 		case <-ticker.C:
 		}
 	}
