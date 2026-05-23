@@ -172,6 +172,17 @@ func TestServerCanDelayOneResponseThenRecover(t *testing.T) {
 	}
 }
 
+func TestUnknownWireErrorsAreIgnorable(t *testing.T) {
+	err := errString("received unknown message")
+	if !isIgnorableWireError(err) {
+		t.Fatalf("unknown message should be ignorable")
+	}
+}
+
+type errString string
+
+func (e errString) Error() string { return string(e) }
+
 func timeHeadersResponse(t *testing.T, conn net.Conn, fixture *chainlab.Fixture) time.Duration {
 	t.Helper()
 	getHeaders := wire.NewMsgGetHeaders()

@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,6 +135,10 @@ func (s *Server) handleConn(conn net.Conn) {
 	for {
 		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, s.params.Net)
 		if err != nil {
+			if isIgnorableWireError(err) {
+				s.record(peer, "in", "unknown", err.Error())
+				continue
+			}
 			s.record(peer, "in", "disconnect", err.Error())
 			return
 		}
@@ -361,6 +366,10 @@ func summarize(msg wire.Message) string {
 	default:
 		return ""
 	}
+}
+
+func isIgnorableWireError(err error) bool {
+	return strings.Contains(err.Error(), "unknown message")
 }
 
 func corruptHash(hash chainhash.Hash) chainhash.Hash {
