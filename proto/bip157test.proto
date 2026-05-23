@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+// Package bip157test.v1 defines the language-neutral boundary between the
+// conformance harness and an implementation-specific adapter binary.
+package bip157test.v1;
+
+message PeerConfig {
+  string id = 1;
+  string address = 2;
+  bool trusted = 3;
+}
+
+message ConfigureRequest {
+  string network = 1;
+  string data_dir = 2;
+  repeated PeerConfig peers = 3;
+  uint32 required_peers = 4;
+  bool allow_discovery = 5;
+}
+
+message BlockRef {
+  string hash_hex = 1;
+  uint32 height = 2;
+}
+
+message WatchScriptRequest {
+  string script_pubkey_hex = 1;
+  uint32 start_height = 2;
+}
+
+message TxMatch {
+  string txid_hex = 1;
+  string block_hash_hex = 2;
+  uint32 height = 3;
+  MatchKind kind = 4;
+  uint32 vout = 5;
+  uint32 vin = 6;
+}
+
+enum MatchKind {
+  MATCH_KIND_UNSPECIFIED = 0;
+  MATCH_KIND_OUTPUT = 1;
+  MATCH_KIND_SPEND = 2;
+}
+
+message GetMatchesRequest {
+  string script_pubkey_hex = 1;
+  uint32 start_height = 2;
+  uint32 stop_height = 3;
+}
+
+message GetMatchesResponse {
+  repeated TxMatch matches = 1;
+}
+
+message PeerState {
+  string id = 1;
+  string address = 2;
+  bool connected = 3;
+  bool banned = 4;
+  string last_error = 5;
+  uint32 best_height = 6;
+  string best_hash_hex = 7;
+}
+
+message ListPeersResponse {
+  repeated PeerState peers = 1;
+}
+
+message HealthResponse {
+  bool alive = 1;
+  string status = 2;
+}
