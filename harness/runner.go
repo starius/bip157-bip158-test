@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -121,7 +122,8 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				run:     runBlockDownloadOutageAdapter,
 			},
 		} {
-			adapterResults, err := adapterScenario.run(ctx, opts, adapterScenario.fixture)
+			scenarioOpts := scenarioOptions(opts, adapterScenario.id)
+			adapterResults, err := adapterScenario.run(ctx, scenarioOpts, adapterScenario.fixture)
 			if err != nil {
 				upsert(&results, score.Result{
 					ID:       adapterScenario.id,
@@ -137,6 +139,19 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	}
 
 	return score.Summarize(results), nil
+}
+
+func scenarioOptions(opts Options, id string) Options {
+	if opts.DataDir == "" {
+		return opts
+	}
+	opts.DataDir = filepath.Join(opts.DataDir, safePathID(id))
+	return opts
+}
+
+func safePathID(id string) string {
+	replacer := strings.NewReplacer("/", "_", "\\", "_", ":", "_")
+	return replacer.Replace(id)
 }
 
 func catalogAsSkipped() []score.Result {
