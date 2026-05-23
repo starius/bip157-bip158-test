@@ -117,6 +117,10 @@ struct AdapterState {
 
 type Shared = Arc<Mutex<AdapterState>>;
 
+/// Regtest genesis hash used when Kyoto's requester starts after genesis.
+const REGTEST_GENESIS_HASH: &str =
+    "0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206";
+
 #[tokio::main]
 async fn main() {
     let listen = std::env::args()
@@ -276,6 +280,13 @@ async fn block_hash(
     State(state): State<Shared>,
     Json(req): Json<BlockRef>,
 ) -> Result<Json<BlockRef>, (StatusCode, String)> {
+    if req.height == 0 {
+        return Ok(Json(BlockRef {
+            hash_hex: REGTEST_GENESIS_HASH.into(),
+            height: 0,
+        }));
+    }
+
     let requester = requester(&state).await?;
     let header = requester
         .get_header(req.height)
