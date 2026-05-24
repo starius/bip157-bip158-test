@@ -21,6 +21,9 @@ The suite has:
 - A harness in `harness/`, CLI runners in `cmd/`, and a cross-implementation
   matrix generator.
 - Fake, Kyoto, Neutrino, Nakamoto, and Wasabi adapters.
+- Current peerlab peers bind to `127.0.0.1:0`, so they have separate ports but
+  not separate IP identities. This is sufficient for most P2P behavior but not
+  sufficient for IP-level ban assertions.
 - Nix-pinned Go, Rust/Cargo, Bitcoin Core, protobuf, and .NET 10 tooling.
 - A tracked latest matrix in `IMPLEMENTATION_MATRIX.md`.
 - Latest validation and failure classification in `VALIDATION_REPORT.md`.
@@ -232,7 +235,107 @@ Scenario IDs:
 - `import.sideload_headers_then_p2p_divergence`
 - `storage.partial_write_recovery`
 
-## Workstream 6: Reporting and CI
+## Workstream 6: Addressing and Overlay Matrix
+
+Goal: run the full conformance matrix across the address and transport
+environments that BIP157/BIP158 clients are expected to use in practice. The
+same scenario IDs should be reused; the matrix gains an environment dimension
+in addition to implementation and BIP status.
+
+Required environments:
+
+- IPv4 clear TCP.
+- IPv6 clear TCP.
+- Tor v3 onion service.
+- I2P destination.
+- cjdns IPv6 overlay address.
+
+Research notes:
+
+- Tor: use Chutney. The Tor Project describes Chutney as a Tor test network
+  configuration tool that can launch Tor processes and establish connectivity
+  between them. This is the clearest local private-network option.
+- I2P: no direct Chutney equivalent was identified. I2P exposes SAM for local
+  applications. The I2P SAM docs explicitly recommend testing with both Java
+  I2P and i2pd because they are independent router implementations with
+  different defaults. A private lab likely needs a harness-owned wrapper around
+  multiple routers, local reseed data, floodfill/bootstrap configuration, and
+  SAM stream tunnels.
+- cjdns: no direct Chutney equivalent was identified. cjdns is an encrypted
+  IPv6 network where `cjdroute` is one node, and node configs can specify
+  peers in `connectTo`. A private lab likely needs a harness-owned wrapper that
+  starts multiple `cjdroute` instances in network namespaces or containers,
+  wires their configs together, and exposes the generated cjdns IPv6 addresses
+  to adapters.
+
+Reference anchors:
+
+- Tor research tools and Chutney:
+  `https://research.torproject.org/tools/`,
+  `https://gitlab.torproject.org/tpo/core/chutney`.
+- I2P SAM and i2pd tunnel configuration:
+  `https://i2p.net/en/docs/api/samv3/`,
+  `https://docs.i2pd.website/en/latest/user-guide/tunnels/`.
+- cjdns overview and configuration:
+  `https://github.com/cjdelisle/cjdns`,
+  `https://raw.githubusercontent.com/cjdelisle/cjdns/master/doc/configure.md`.
+
+Tasks:
+
+1. Extend peerlab to bind peers to distinct local identities:
+   - IPv4: allocate separate loopback addresses, for example `127.0.0.2`,
+     `127.0.0.3`, or netns-local addresses.
+   - IPv6: allocate separate loopback or netns-local IPv6 addresses.
+   - Record the selected IP family and identity in every peer transcript.
+2. Extend the adapter API so the harness can describe peer address type and
+   proxy requirements without overloading the plain `address` string.
+3. Add an environment selector to the harness and matrix generator:
+   `ipv4`, `ipv6`, `tor-v3`, `i2p`, and `cjdns`.
+4. Add IPv4 and IPv6 clear-TCP runs first. These should be mandatory for the
+   core matrix because they require no anonymity-overlay bootstrap.
+5. Add Tor v3 runs through Chutney:
+   - start a private Chutney network in the test data directory;
+   - expose peerlab nodes as v3 onion services;
+   - configure adapters through SOCKS or native onion peer support;
+   - run every scenario that can work over Tor;
+   - classify unsupported onion peer support separately from BIP157 failures.
+6. Add I2P runs through a new `i2p-lab` helper:
+   - start multiple local Java I2P or i2pd routers with isolated data
+     directories;
+   - create local streaming destinations for peerlab;
+   - provide deterministic bootstrap using local reseed data or a controlled
+     floodfill/router-info seed;
+   - connect adapters through SAM or native I2P peer support;
+   - test both Java I2P and i2pd where practical because their defaults differ.
+7. Add cjdns runs through a new `cjdns-lab` helper:
+   - generate per-node cjdroute configs;
+   - run nodes in network namespaces or containers;
+   - connect nodes through explicit `connectTo` entries;
+   - expose peerlab over cjdns IPv6 addresses;
+   - collect cjdns peer state as part of scenario evidence.
+8. Add a capability model so an implementation can be marked unsupported for an
+   environment without turning every row red. If an implementation claims
+   support for an environment, failures in that environment should score
+   normally.
+9. For empirical ban tests, require distinct peer identities in the active
+   environment. If the environment collapses all peers to one local IP or one
+   proxy endpoint, mark IP-level ban assertions unsupported and fall back to
+   behavior-level rejection tests.
+10. Add Nix packages or pinned source builds for Chutney, Tor, Java I2P/i2pd,
+    cjdns, and any helper tooling needed to create namespaces or containers.
+
+Scenario IDs:
+
+- `env.ipv4.full_matrix`
+- `env.ipv6.full_matrix`
+- `env.tor_v3.full_matrix`
+- `env.i2p.full_matrix`
+- `env.cjdns.full_matrix`
+- `peer.identity_distinct_ipv4`
+- `peer.identity_distinct_ipv6`
+- `peer.identity_distinct_overlay`
+
+## Workstream 7: Reporting and CI
 
 Tasks:
 
@@ -242,6 +345,8 @@ Tasks:
 4. Add documentation for privileged `netem` mode.
 5. Keep adapter documentation current for Kyoto, Neutrino, Nakamoto, Wasabi,
    and third-party implementations.
+6. Add environment-aware matrix output with rows keyed by scenario and columns
+   split by implementation plus environment.
 
 ## Scoring Rules
 
