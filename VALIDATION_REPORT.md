@@ -12,70 +12,118 @@ cd adapters/neutrino && go test ./...
 cd adapters/kyoto && cargo test
 ```
 
-Coverage at this point includes the suite packages, peer simulator, scoring,
-scenario catalog, fake adapter, Neutrino adapter helper logic, and Kyoto adapter
-helper logic.
+Coverage includes the suite packages, long-chain fixture builder, peer
+simulator, scoring, scenario catalog, fake adapter, Neutrino adapter helper
+logic, and Kyoto adapter helper logic.
 
-## Harness Self-Test
+## Harness Matrix
 
-The reference fake adapter produced a green executable-subset report:
+The harness catalog currently contains 82 scenarios. The executable subset now
+includes BIP158 vectors, long BIP157 header/filter sync, checkpoint boundaries,
+adapter API checks, temporary delays, and several adversarial peer cases.
 
-| Scenario | Result |
-| --- | --- |
-| Honest wallet receive and spend | pass |
-| One honest peer and one lying cfheaders peer | pass |
-| Direct corrupt cfilter peer | pass |
-| Temporary block download delay | pass |
-| Temporary cfheaders delay | pass |
+| Implementation | Overall | Notes |
+| --- | --- | --- |
+| fake adapter | green | Self-test target passed every executable scenario. |
+| Kyoto adapter | red | Mandatory malformed `cfheaders` previous-header check failed. Several SHOULD peer-punishment checks also failed. |
+| Neutrino adapter | red | Did not complete long-chain header sync with peerlab; every adapter scenario that needs tip sync failed before compact-filter messages were requested. |
 
-Skipped catalog entries remain visible in the generated report. Skips do not
-improve the score.
+## Fake Adapter
 
-## Kyoto Adapter Run
+The fake adapter produced a green report. It is not a Bitcoin client; it exists
+to prove the harness, scoring, and adapter API can produce a clean run.
 
-Kyoto produced an orange report:
+Important passes:
 
-| Scenario | Level | Result | Notes |
-| --- | --- | --- | --- |
-| Honest wallet receive and spend | MUST | pass | Kyoto reported both the watched output and spend. |
-| Temporary cfheaders delay | MUST | pass | Kyoto reached the fixture tip after a one-shot cfheaders delay. |
-| Temporary block download delay | MUST | pass | Kyoto reported both matches after a one-shot block delay. |
-| One honest peer and one lying cfheaders peer | SHOULD | fail | The adapter could not query peer state after the adversarial run; `/list-peers` returned 503. |
-| Direct corrupt cfilter peer | SHOULD | fail | Same peer-state query failure after the adversarial run. |
+- all BIP158 internal vectors
+- honest wallet receive/spend
+- long-chain tip sync
+- adapter block-hash and peer API checks
+- bad `cfcheckpt`, bad previous filter header, bad `cfilter`, wrong filter
+  type, conflicting `cfheaders`, and unresponsive peer simulations
+- temporary `cfheaders` and block-download delays
 
-Interpretation: the current executable subset finds no Kyoto MUST failure, but
-it does not observe the requested SHOULD-level peer punishment behavior.
+## Kyoto Adapter
 
-## Neutrino Adapter Run
+Kyoto produced a red report.
 
-Neutrino produced a red report:
+Mandatory passes:
 
-| Scenario | Level | Result | Notes |
-| --- | --- | --- | --- |
-| Honest wallet receive and spend | MUST | fail | The adapter did not reach the compact-filter-ready tip. |
-| Temporary cfheaders delay | MUST | fail | Same tip timeout. |
-| Temporary block download delay | MUST | fail | Same tip timeout. |
-| One honest peer and one lying cfheaders peer | SHOULD | fail | Same tip timeout before disagreement resolution could be observed. |
-| Direct corrupt cfilter peer | SHOULD | fail | Same tip timeout before corrupt-filter punishment could be observed. |
+- BIP158 internal vectors
+- honest wallet receive/spend
+- long chain to height 2005
+- large header/filter batch progress
+- `cfheaders` checkpoint-boundary sync
+- adapter best-block, block-hash, unknown-height, and peer API checks
+- temporary `cfheaders` and block-download delay recovery
+- multi-peer initial sync baseline
+- one-shot and long rescan result baselines
 
-The peer transcript for the honest run shows Neutrino successfully handshaking,
-requesting headers, receiving two headers, then requesting headers again and
-receiving zero. It never requested compact filter headers from the short
-three-block fixture before the harness timeout. This may be a Neutrino short
-regtest-chain assumption, a simulator compatibility gap, or both; it is still a
-valid red result for the current black-box suite because the adapter did not
-complete the required API contract.
+Mandatory failure:
 
-## Current Limitations
+| Scenario | Result | Evidence |
+| --- | --- | --- |
+| `neutrino.blockmanager_invalid_interval.invalid_prev_header` / `bip157.bad_cfheaders_prev_header` | fail | Kyoto reached the target tip after peerlab served a corrupt `PrevFilterHeader`; no ban, disconnect, or adapter-visible error was observed. |
 
-- The scenario catalog contains every Kyoto and Neutrino baseline scenario found
-  during analysis, but many baseline scenarios are still catalog-only and
-  reported as skipped.
-- The executable peerlab chain is intentionally tiny. Neutrino's existing tests
-  use much deeper SimNet chains, including 800-block and multi-peer setups, so a
-  future suite iteration should add a long-chain fixture mode for checkpoint
-  interval and cfheaders synchronization behavior.
-- Taproot prevout coverage is cataloged but not implemented yet.
-- The current adapters expose the best available peer state through public APIs.
-  Kyoto does not expose persistent ban state, and the Neutrino adapter cannot
-  query its ban store directly.
+SHOULD failures:
+
+| Scenario | Result | Evidence |
+| --- | --- | --- |
+| `bip157.bad_cfcheckpt_response` / `neutrino.cfcheckpt_sanity.case_1` | fail | Corrupt compact-filter checkpoint was not punished. |
+| `bip157.conflict_one_honest_one_liar` / `neutrino.cfheaders_mismatch.case_1` | fail | Lying `cfheaders` peer was not punished. |
+| `bip157.direct_bad_cfilter_ban` / `neutrino.detect_bad_peers.filter_hash_mismatch` | fail | Corrupt `cfilter` peer was not punished. |
+| `bip157.wrong_filter_type_response` | fail | Wrong filter type response was not punished. |
+| `neutrino.detect_bad_peers.unresponsive_peer` | fail | Peer-state query returned 503 during the stalled-peer scenario. |
+
+Interpretation: Kyoto handles the ordinary long-chain and recovery paths, but
+the current executable suite observes a mandatory invalid-filter-header
+acceptance path and missing SHOULD-level adversarial peer handling.
+
+## Neutrino Adapter
+
+Neutrino produced a red report.
+
+Internal BIP158 vectors passed because they are independent suite checks. The
+adapter scenarios that need Neutrino to sync with peerlab failed before compact
+filter messages were requested.
+
+Representative failure:
+
+```text
+getheaders -> headers(2000) -> disconnect EOF
+```
+
+This pattern appeared in the honest run, long-chain run, checkpoint-boundary
+run, outage runs, multi-peer initial sync, and all adversarial runs. Because the
+bad `cfheaders`, `cfcheckpt`, and `cfilter` responses were never served, those
+adversarial scenarios are now reported as failures or blocked by the same
+header-sync obstacle rather than as successful peer punishment.
+
+Mandatory failures include:
+
+- `adapter.honest_wallet_receive_spend`
+- `chain.long_checkpointed_header_sync`
+- `bip157.large_batch_progress_timeout`
+- `bip157.cfheaders_order_and_checkpoint_boundaries`
+- `kyoto.various_client_methods`
+- `network.outage_filter_headers`
+- `network.outage_block_download`
+- `neutrino.sync_without_headers_import.initial_sync`
+- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
+
+Interpretation: this is either a peerlab/Neutrino interoperability gap around
+header pagination or a Neutrino behavior difference from the existing SimNet
+tests. It is still a valid red result for this black-box suite because the
+adapter did not reach the required best block or wallet-match API contract.
+
+## Remaining Gaps
+
+- Reorg and persistence scenarios remain cataloged but not executable.
+- The self-consistent eclipse scenario remains cataloged because BIP157 cannot
+  guarantee detection when every peer serves a mutually consistent false filter
+  chain.
+- Several Neutrino baseline permutations remain cataloged only; the current
+  first-page header-sync failure must be resolved before they can produce useful
+  compact-filter evidence.
+- Optional network emulation with packet loss, reordering, duplication, and
+  privileged `netem` mode is still pending.

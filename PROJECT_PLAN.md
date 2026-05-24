@@ -3,8 +3,9 @@
 Date: 2026-05-23
 
 This is the current execution plan for `/home/user/bip157-bip158-test`.
-Completed bootstrap work has been removed from the plan section so the remaining
-items describe work that still needs to be done.
+Completed bootstrap work and completed long-chain work have been removed from
+the active plan. The remaining items focus on correctness gaps that still need
+implementation or deeper investigation.
 
 ## Goal
 
@@ -13,9 +14,9 @@ implementations.
 
 The suite validates an implementation through a small adapter binary. The
 adapter exposes a fixed API, connects only to harness-controlled regtest peers,
-and reports best block, watched-script matches, and peer state where available.
-The harness creates deterministic chains, honest peers, adversarial peers,
-temporary network failures, and conformance reports.
+and reports best block, watched-script matches, block hashes by height, and
+peer state where available. The harness creates deterministic chains, honest
+peers, adversarial peers, temporary network failures, and conformance reports.
 
 Score meanings:
 
@@ -35,36 +36,38 @@ The suite already has:
 
 - A fixed adapter schema in `proto/bip157test.proto` and HTTP/JSON API types in
   `api/`.
-- A deterministic short regtest fixture in `chainlab/`.
-- Independent BIP158 filter helpers with unit tests for coinbase outputs,
-  OP_RETURN exclusion, zero-element serialization, and filter-header linkage.
+- Deterministic short and long regtest fixtures in `chainlab/`; the long
+  fixture reaches height 2005 and crosses two compact-filter checkpoint
+  intervals.
+- Independent BIP158 checks for coinbase outputs, coinbase input exclusion,
+  OP_RETURN exclusion, zero-element serialization, full-script matching, and
+  legacy, P2SH, P2WSH, and Taproot prevout scripts.
 - A Bitcoin P2P simulator in `peerlab/` that can serve headers, blocks,
-  `cfheaders`, `cfilters`, `cfcheckpt`, corrupt selected compact-filter data,
-  delay selected responses once, and record transcripts.
+  `cfheaders`, `cfilters`, `cfcheckpt`, paginate long headers, corrupt selected
+  compact-filter data, corrupt `PrevFilterHeader`, return wrong filter types,
+  delay selected responses, and record transcripts.
 - A harness in `harness/` and `cmd/bip157-harness`.
 - A reference fake adapter in `cmd/fake-adapter`.
 - Kyoto and Neutrino adapters in `adapters/kyoto` and `adapters/neutrino`.
 - Scenario metadata in `scenario/catalog.go` that includes the existing Kyoto
   and Neutrino baseline tests plus stronger conformance scenarios.
 
-Latest recorded validation:
+Latest recorded validation is in `VALIDATION_REPORT.md`:
 
-- Fake adapter: green for the executable subset.
-- Kyoto adapter: orange; honest wallet matching and temporary delay scenarios
-  passed, adversarial peer-punishment scenarios failed or could not expose peer
-  state cleanly.
-- Neutrino adapter: red on the current short fixture; it handshook and fetched
-  headers but did not reach compact-filter-ready tip before timeout.
-
-Details are in `VALIDATION_REPORT.md`.
+- Fake adapter: green.
+- Kyoto adapter: red because the malformed `cfheaders` previous-header scenario
+  is a mandatory failure; several SHOULD adversarial peer checks also fail.
+- Neutrino adapter: red because it disconnects after peerlab's first 2000-header
+  page and does not reach compact-filter sync.
 
 ## Why Some Scenarios Are Skipped
 
 The catalog is not an execution manifest. It is coverage accounting.
 
-`harness.Run` currently starts by marking every catalog entry as `skipped`, then
-overwrites only the scenarios that have executable harness code. This makes
-missing coverage visible in every report instead of silently omitting it.
+`harness.Run` starts by marking every catalog entry as `skipped`, then
+overwrites only the scenarios that have executable harness code and enough
+prerequisite progress to assert a result. This makes missing coverage visible
+instead of silently omitting it.
 
 A cataloged scenario can become executable only after all needed pieces exist:
 
@@ -74,28 +77,49 @@ A cataloged scenario can become executable only after all needed pieces exist:
 - adapter API support or a clear way to infer the result from peer transcripts
   and wallet outcomes
 
-Scenarios are therefore skipped because they are not implemented as harness
-code yet, not because they are disabled by a runtime flag.
-
 ## Scenarios Runnable Today
 
 These run without an adapter:
 
+- `bip158.coinbase_input_excluded`
 - `bip158.coinbase_output_included`
-- `bip158.prevout_legacy_included`
+- `bip158.empty_filter_wire_forms`
+- `bip158.full_script_not_pushdata`
 - `bip158.op_return_excluded`
+- `bip158.prevout_legacy_included`
+- `bip158.prevout_p2sh_included`
+- `bip158.prevout_p2wsh_included`
+- `bip158.prevout_taproot_included`
 - `bip158.zero_element_serialization`
 
 These additionally run when `bip157-harness` is given `--adapter-url`:
 
 - `adapter.honest_wallet_receive_spend`
+- `kyoto.various_client_methods`
+- `kyoto.whitelist_only_sync`
+- `chain.long_checkpointed_header_sync`
+- `bip157.large_batch_progress_timeout`
+- `bip157.cfheaders_order_and_checkpoint_boundaries`
+- `bip157.bad_cfcheckpt_response`
+- `bip157.bad_cfheaders_prev_header`
 - `bip157.conflict_one_honest_one_liar`
 - `bip157.direct_bad_cfilter_ban`
+- `bip157.wrong_filter_type_response`
 - `network.outage_filter_headers`
 - `network.outage_block_download`
+- `neutrino.sync_without_headers_import.initial_sync`
+- `neutrino.sync_without_headers_import.one_shot_rescan`
+- `neutrino.sync_without_headers_import.long_rescan_start`
+- `neutrino.sync_without_headers_import.rescan_results`
+- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
+- `neutrino.cfcheckpt_sanity.case_1`
+- `neutrino.cfheaders_mismatch.case_1`
+- `neutrino.detect_bad_peers.filter_hash_mismatch`
+- `neutrino.detect_bad_peers.unresponsive_peer`
 
-Everything else in `scenario.Catalog()` is still catalog-only and will be
-reported as `skipped`.
+Some baseline IDs above are asserted by the same underlying conformance run. If
+a prerequisite sync fails before the assertion point, dependent baseline IDs may
+remain skipped or fail with the prerequisite obstacle.
 
 Practical command shapes:
 
@@ -111,71 +135,75 @@ go run ./cmd/bip157-harness \
   --out run-artifacts/fake
 ```
 
-The Kyoto and Neutrino adapters can also be run, but current reports should be
-read as validation of the executable subset only.
+## Priority 1: Explain Neutrino Header Pagination Failure
 
-## Priority 1: Long-Chain BIP157 Core
-
-This is the next implementation target because it unlocks real BIP157 range and
-checkpoint behavior and likely explains the current Neutrino adapter failure on
-the short fixture.
+Neutrino currently disconnects after peerlab replies to the first `getheaders`
+with 2000 headers. It does not request the next page or compact-filter data.
 
 Tasks:
 
-1. Add a deterministic long-chain fixture mode in `chainlab`.
-   - Cross at least several `cfheaders`/`cfcheckpt` intervals.
-   - Keep watched receive/spend transactions at known heights.
-   - Include blocks with empty filters, OP_RETURN-only filters, and ordinary
-     wallet matches.
-   - Unit-test filter headers, checkpoint headers, and expected matches.
-
-2. Extend `peerlab` for long-range compact-filter behavior.
-   - Serve long-chain `getheaders`, `getcfheaders`, `getcfilters`, and
-     `getcfcheckpt`.
-   - Enforce BIP157 maximum ranges.
-   - Support wrong stop hash, stale stop hash, wrong previous filter header,
-     out-of-order late response, duplicate response, and too-many response
-     cases.
-
-3. Implement these executable scenarios:
-   - `chain.long_checkpointed_header_sync`
-   - `bip157.large_batch_progress_timeout`
-   - `bip157.cfheaders_order_and_checkpoint_boundaries`
-
-4. Re-run fake, Kyoto, and Neutrino adapters.
-   - Neutrino should be re-evaluated after the long-chain path exists.
-   - If Neutrino still fails, the peer transcript should show the exact missing
-     simulator behavior or client-side failure.
+1. Compare peerlab's header response shape against btcd/bitcoind behavior used
+   by Neutrino's existing rpctest/SimNet tests.
+2. Add a focused compatibility test for 2000-header pagination.
+3. Determine whether the failure is peerlab behavior, adapter configuration, or
+   a Neutrino bug.
+4. Re-run the full Neutrino matrix after the root cause is fixed.
 
 Exit criteria:
 
-- The fake adapter remains green.
-- The harness can drive a long-chain sync through `peerlab`.
-- Reports distinguish range/checkpoint protocol failures from adapter API gaps.
+- Neutrino either reaches height 2005 and starts compact-filter checks, or the
+  report identifies the exact protocol incompatibility.
 
-## Priority 2: Adversarial BIP157 Correctness
+## Priority 2: Reorg, Persistence, and Canonicality
 
 Tasks:
 
-1. Implement a disagreement interrogation matrix:
+1. Build forked fixtures and mutable peer behavior for one-block and two-block
+   reorgs.
+2. Interrupt `cfheaders` processing, restart with the same data directory, and
+   require compact-filter headers to catch up without data deletion.
+3. Persist an invalid filter-header chain from mutually consistent malicious
+   peers, restart, introduce an honest peer, and require rollback/resync.
+4. Run a long reorg while filters are in flight.
+5. Add stale-branch block request tests for APIs that expose block fetching by
+   hash.
+
+Scenario IDs:
+
+- `kyoto.live_reorg`
+- `kyoto.live_reorg_additional_sync`
+- `kyoto.stop_reorg_resync`
+- `kyoto.stop_reorg_two_resync`
+- `kyoto.stop_reorg_start_on_orphan`
+- `persistence.interrupted_cfheaders_restart`
+- `bip157.invalid_persisted_filter_headers_recover`
+- `chain.reorg_filter_in_flight_long`
+- `kyoto.stale_header_block_request`
+
+Exit criteria:
+
+- Recovery does not require manual data-dir deletion.
+- Canonical versus known-stale block state is visible in the report.
+
+## Priority 3: Expand Adversarial BIP157 Matrix
+
+Tasks:
+
+1. Add disagreement cases at configurable heights:
    - conflicting `cfheaders`
    - conflicting `cfcheckpt`
    - wrong `cfilter`
-   - first disagreement at configurable height
    - late peer joins with bad compact-filter state
-
-2. Implement bad-data versus timing-race false-ban scenarios:
+2. Add bad-data versus timing-race false-ban scenarios:
    - provably invalid compact-filter data
    - ordinary peer disconnect during follow-up query
    - late in-flight compact-filter response
    - new block announcement during in-flight filter sync
-
-3. Implement peer-specific stop-hash knowledge tests:
+3. Add peer-specific stop-hash knowledge tests:
    - peer A knows the stop hash
    - peer B does not
    - client must not enter reconnect loops or classify unknown stop hash as
      proven bad compact-filter data
-
 4. Implement self-consistent eclipse reporting:
    - all peers mutually agree on bad filter headers and filters
    - report the trust limitation clearly instead of pretending full BIP158
@@ -196,98 +224,44 @@ Exit criteria:
 - Timing failures do not count as proof of bad compact-filter data.
 - Reports state whether peer punishment was observed, unsupported, or inferred.
 
-## Priority 3: BIP158 Exactness
+## Priority 4: BIP158 Exactness Still Missing
 
 Tasks:
 
-1. Add full-script matching cases.
-   - Construct scripts where the same pushed bytes appear in different script
-     templates.
-   - Assert matching is against the whole scriptPubKey, not arbitrary pushdata.
-
-2. Add OP_RETURN conflict-resolution coverage.
-   - Use a peer-disagreement scenario where the only difference is improper
-     inclusion of OP_RETURN output scripts.
-
-3. Add empty and near-empty filter wire-form cases.
-   - Verify canonical zero-element serialization and header commitment.
-
-4. Add witness and prevout coverage.
-   - P2WPKH
-   - P2WSH
-   - nested segwit
-   - P2TR
-   - block retrieval with and without witness data when an adapter exposes that
-     capability
+1. Add OP_RETURN conflict-resolution coverage where the only peer difference is
+   improper inclusion of OP_RETURN output scripts.
+2. Add nested-segwit and non-witness prevout coverage.
+3. Add block retrieval with and without witness data when an adapter exposes
+   that capability.
 
 Scenario IDs:
 
-- `bip158.full_script_not_pushdata`
 - `bip158.op_return_conflict_resolution`
-- `bip158.empty_filter_wire_forms`
 - `blocks.witness_prevout_matrix`
-- `bip158.prevout_taproot_included`
 
 Exit criteria:
 
-- The independent filter builder covers all BIP158 mandatory element rules.
 - Conflict-resolution scenarios catch invalid filters when at least one honest
   compact-filter source is available.
-
-## Priority 4: Reorg, Persistence, and Canonicality
-
-Tasks:
-
-1. Interrupt `cfheaders` processing, restart with the same data directory, and
-   require compact-filter headers to catch up without data deletion.
-
-2. Persist an invalid filter-header chain from mutually consistent malicious
-   peers, restart, introduce an honest peer, and require rollback/resync rather
-   than deadlock.
-
-3. Run a long reorg while filters are in flight.
-   - Do not permanently ban the only honest peer for stale in-flight responses.
-   - Roll back stale filter headers and filters.
-
-4. Add stale-branch block request tests for APIs that expose block fetching by
-   hash.
-   - Known stale hashes must be distinguishable from canonical chain hashes.
-
-Scenario IDs:
-
-- `persistence.interrupted_cfheaders_restart`
-- `bip157.invalid_persisted_filter_headers_recover`
-- `chain.reorg_filter_in_flight_long`
-- `kyoto.stale_header_block_request`
-
-Exit criteria:
-
-- Recovery does not require manual data-dir deletion.
-- Canonical versus known-stale block state is visible in the report.
 
 ## Priority 5: Network and Optional Capability Stress
 
 Tasks:
 
-1. Add optional netns/veth/tc `netem` mode.
+1. Add optional netns/veth/tc `netem` mode:
    - delay
    - packet loss
    - duplication
    - reordering
    - full outage and recovery
-
 2. Add idle keepalive and long-wait checks.
-
-3. Add deterministic restricted-peer-set checks.
+3. Add deterministic restricted-peer-set checks:
    - valid and invalid configured peers
    - DNS-style peers
    - onion-style peers where the adapter supports them
    - no uncontrolled discovery when disabled
-
 4. Add optional BIP130 `sendheaders` tip tracking.
-
 5. Add optional `NODE_NETWORK_LIMITED` near-tip peer behavior.
-
 6. Add optional storage/cache/import tests for adapters that expose those
    capabilities.
 
@@ -311,17 +285,13 @@ Exit criteria:
 
 Tasks:
 
-1. Add a BIP157/BIP158 requirement coverage table.
+1. Add a BIP157/BIP158 requirement coverage table:
    - every `MUST`
    - every relevant `SHOULD`
    - implemented, skipped, unsupported, or out of scope
-
 2. Add JUnit output for CI.
-
 3. Add a basic CI job for non-privileged mode.
-
 4. Add documentation for privileged `netem` mode.
-
 5. Keep adapter documentation current for Kyoto, Neutrino, and generic
    third-party implementations.
 
@@ -338,6 +308,3 @@ Exit criteria:
   correctness failure.
 - Optional implementation stress scenarios are `IMPLEMENTATION` or `MAY`.
 - A temporary network failure is not proof of malicious compact-filter data.
-- A self-consistent malicious eclipse is a trust limitation unless an adapter
-  claims stronger external validation.
-- Skipped scenarios are visible and do not improve the score.
