@@ -22,6 +22,19 @@ weak `SHOULD` behavior should score orange.
 | NEUTRINO-SHOULD-003 | SHOULD | Bad-filter peer resolution is meaningful but not complete for all BIP158 element sets because it relies on partial verification plus OP_RETURN mismatch heuristics. | OP_RETURN mismatch counting and potential bans are at `/home/user/neutrino/blockmanager.go:1766`; unit coverage exists in `/home/user/neutrino/bamboozle_unit_test.go:657`. | `bip157.direct_bad_cfilter_ban`, `neutrino.resolve_filter_mismatch.*` |
 | NEUTRINO-TEST-004 | Test gap | Neutrino has deeper internal tests than Kyoto, including real `rpctest` nodes and conflict-resolution unit tests, but those tests are implementation-specific and not a reusable BIP157/BIP158 conformance suite. | SimNet/rpctest setup appears in `/home/user/neutrino/sync_test.go:1088` and multi-peer setup at `/home/user/neutrino/sync_test.go:1465`. | The suite catalog imports all listed Neutrino baseline scenarios and adds stronger black-box adversarial scenarios. |
 
+## Nakamoto
+
+| ID | Severity | Finding | Evidence | Expected Test Coverage |
+| --- | --- | --- | --- | --- |
+| NAKAMOTO-TEST-001 | Test blocker | The new strict adapter builds, starts, and connects to peerlab, but does not advance to the long-chain tip in the black-box suite. This is not yet classified as a Nakamoto implementation bug; it needs a focused adapter/peerlab compatibility investigation. | Latest run shows version/verack/ping traffic and some `getcfilters` requests for regtest genesis, but no successful height-2005 sync. See `VALIDATION_REPORT.md` and `IMPLEMENTATION_MATRIX.md`. | `adapter.honest_wallet_receive_spend`, `chain.long_checkpointed_header_sync`, and all adapter scenarios that require tip sync. |
+
+## Wasabi
+
+| ID | Severity | Finding | Evidence | Expected Test Coverage |
+| --- | --- | --- | --- | --- |
+| WASABI-STRICT-001 | Adapter blocker | Current Wasabi master is not a strict BIP157 P2P target because its standard-filter path uses Bitcoin RPC filter calls. | Wasabi's synchronizer has an RPC filter provider path, and current standard operation relies on `getblockfilter`-style RPC access. | Excluded from strict green/orange/red matrix. |
+| WASABI-STRICT-002 | Adapter blocker | The P2P compact-filter PR branch is useful for scenario ideas but does not yet expose the normal headless strict-adapter shape required by this suite. | The branch still constructs and monitors Bitcoin RPC in the app startup path, and its regtest P2P helper connects to `Network.RegTest.DefaultPort` rather than harness-supplied peer addresses. | Future `wasabi-p2p-experimental` only after explicit-peer regtest support or a small library-level adapter exists. |
+
 ## Upstream Issue and PR Cross-References
 
 Checked against open GitHub issues and PRs on 2026-05-23. These are

@@ -10,120 +10,101 @@ The following checks passed in the reproducible Nix shell:
 go test ./...
 cd adapters/neutrino && go test ./...
 cd adapters/kyoto && cargo test
+cd adapters/nakamoto && cargo test
 ```
 
-Coverage includes the suite packages, long-chain fixture builder, peer
-simulator, scoring, scenario catalog, fake adapter, Neutrino adapter helper
-logic, and Kyoto adapter helper logic.
+The shell is pinned by `flake.lock` and includes Go, Rust/Cargo, Bitcoin Core,
+protobuf tooling, and .NET 10 for future Wasabi experiments.
 
-## Harness Matrix
+## Matrix
 
-The harness catalog currently contains 82 scenarios. The executable subset now
-includes BIP158 vectors, long BIP157 header/filter sync, checkpoint boundaries,
-adapter API checks, temporary delays, and several adversarial peer cases.
+The generated implementation matrix is saved in `IMPLEMENTATION_MATRIX.md`.
+The catalog now contains 88 scenarios. The current executable subset contains
+37 passing scenarios for the fake adapter and includes BIP158 vectors, long
+BIP157 header/filter sync, temporary outage recovery, explicit-peer mode, and
+adversarial `cfheaders`, `cfcheckpt`, `cfilter`, and downloaded-block cases.
 
-| Implementation | Overall | Notes |
-| --- | --- | --- |
-| fake adapter | green | Self-test target passed every executable scenario. |
-| Kyoto adapter | red | Mandatory malformed `cfheaders` previous-header check failed. Several SHOULD peer-punishment checks also failed. |
-| Neutrino adapter | red | Did not complete long-chain header sync with peerlab; every adapter scenario that needs tip sync failed before compact-filter messages were requested. |
+| Implementation | Overall | Pass | Fail | Skipped | Notes |
+| --- | --- | ---: | ---: | ---: | --- |
+| no-adapter | green | 10 | 0 | 78 | Internal BIP158 vectors only. |
+| fake adapter | green | 37 | 0 | 51 | Harness self-test target passed every executable scenario. |
+| Kyoto adapter | red | 23 | 14 | 51 | Ordinary sync passes; adversarial validation and invalid-block checks fail. |
+| Neutrino adapter | red | 10 | 22 | 56 | Still disconnects after the first 2000-header page from peerlab. |
+| Nakamoto adapter | red | 10 | 22 | 56 | Adapter starts, but does not advance past peerlab genesis/filter interaction. |
 
-## Fake Adapter
+## Kyoto
 
-The fake adapter produced a green report. It is not a Bitcoin client; it exists
-to prove the harness, scoring, and adapter API can produce a clean run.
+Kyoto passes the main honest and recovery paths:
 
-Important passes:
-
-- all BIP158 internal vectors
-- honest wallet receive/spend
-- long-chain tip sync
-- adapter block-hash and peer API checks
-- bad `cfcheckpt`, bad previous filter header, bad `cfilter`, wrong filter
-  type, conflicting `cfheaders`, and unresponsive peer simulations
-- temporary `cfheaders` and block-download delays
-
-## Kyoto Adapter
-
-Kyoto produced a red report.
-
-Mandatory passes:
-
-- BIP158 internal vectors
 - honest wallet receive/spend
 - long chain to height 2005
-- large header/filter batch progress
-- `cfheaders` checkpoint-boundary sync
-- adapter best-block, block-hash, unknown-height, and peer API checks
+- large compact-filter batch progress
+- checkpoint-boundary sync
+- best-block, block-hash, unknown-height, and peer API checks
 - temporary `cfheaders` and block-download delay recovery
-- multi-peer initial sync baseline
-- one-shot and long rescan result baselines
+- explicit-peer/no-discovery mode
 
-Mandatory failure:
+Kyoto fails two executable MUST rows:
 
-| Scenario | Result | Evidence |
-| --- | --- | --- |
-| `neutrino.blockmanager_invalid_interval.invalid_prev_header` / `bip157.bad_cfheaders_prev_header` | fail | Kyoto reached the target tip after peerlab served a corrupt `PrevFilterHeader`; no ban, disconnect, or adapter-visible error was observed. |
+- `blocks.invalid_downloaded_block_rejected`
+- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
 
-SHOULD failures:
+Kyoto also fails the executable SHOULD adversarial rows for bad `cfcheckpt`,
+bad `PrevFilterHeader`, empty `cfheaders`, conflicting `cfheaders`, corrupt or
+malformed `cfilter`, wrong `cfilter` block hash, wrong filter type, and
+unresponsive peer handling. The common pattern is that the adapter either
+reaches the tip or cannot report a peer punishment/error after peerlab serves
+the bad data.
 
-| Scenario | Result | Evidence |
-| --- | --- | --- |
-| `bip157.bad_cfcheckpt_response` / `neutrino.cfcheckpt_sanity.case_1` | fail | Corrupt compact-filter checkpoint was not punished. |
-| `bip157.conflict_one_honest_one_liar` / `neutrino.cfheaders_mismatch.case_1` | fail | Lying `cfheaders` peer was not punished. |
-| `bip157.direct_bad_cfilter_ban` / `neutrino.detect_bad_peers.filter_hash_mismatch` | fail | Corrupt `cfilter` peer was not punished. |
-| `bip157.wrong_filter_type_response` | fail | Wrong filter type response was not punished. |
-| `neutrino.detect_bad_peers.unresponsive_peer` | fail | Peer-state query returned 503 during the stalled-peer scenario. |
+## Neutrino
 
-Interpretation: Kyoto handles the ordinary long-chain and recovery paths, but
-the current executable suite observes a mandatory invalid-filter-header
-acceptance path and missing SHOULD-level adversarial peer handling.
+Neutrino passes only the implementation-independent BIP158 vectors in this
+black-box run. Every adapter scenario that requires long-chain sync fails
+before compact-filter messages are requested.
 
-## Neutrino Adapter
-
-Neutrino produced a red report.
-
-Internal BIP158 vectors passed because they are independent suite checks. The
-adapter scenarios that need Neutrino to sync with peerlab failed before compact
-filter messages were requested.
-
-Representative failure:
+Representative peer transcript:
 
 ```text
 getheaders -> headers(2000) -> disconnect EOF
 ```
 
-This pattern appeared in the honest run, long-chain run, checkpoint-boundary
-run, outage runs, multi-peer initial sync, and all adversarial runs. Because the
-bad `cfheaders`, `cfcheckpt`, and `cfilter` responses were never served, those
-adversarial scenarios are now reported as failures or blocked by the same
-header-sync obstacle rather than as successful peer punishment.
+This remains either a peerlab/Neutrino interoperability gap around header
+pagination or a behavior difference from Neutrino's internal SimNet tests. It
+is still a red black-box result because the adapter does not satisfy the
+required best-block and wallet-match API contract.
 
-Mandatory failures include:
+## Nakamoto
 
-- `adapter.honest_wallet_receive_spend`
-- `chain.long_checkpointed_header_sync`
-- `bip157.large_batch_progress_timeout`
-- `bip157.cfheaders_order_and_checkpoint_boundaries`
-- `kyoto.various_client_methods`
-- `network.outage_filter_headers`
-- `network.outage_block_download`
-- `neutrino.sync_without_headers_import.initial_sync`
-- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
+The new Nakamoto adapter builds and its unit tests pass. In the black-box run,
+Nakamoto connects to peerlab and exchanges version/verack/ping traffic, but it
+does not reach the long-chain tip. Some scenarios show repeated or initial
+`getcfilters` requests for the regtest genesis block, but no successful
+long-chain header progress.
 
-Interpretation: this is either a peerlab/Neutrino interoperability gap around
-header pagination or a Neutrino behavior difference from the existing SimNet
-tests. It is still a valid red result for this black-box suite because the
-adapter did not reach the required best block or wallet-match API contract.
+The current result should be treated as an adapter/peerlab compatibility
+obstacle until isolated further. It is scored red because the strict adapter
+contract requires the implementation to reach the harness tip and report wallet
+matches from P2P data.
+
+## Wasabi
+
+Wasabi master remains outside the strict BIP157 P2P matrix because its current
+standard-filter path uses Bitcoin RPC filter calls.
+
+The evaluated P2P compact-filter PR branch is still experimental. It contains
+useful validation logic for empty `cfheaders`, wrong ranges, previous-header
+mismatches, malformed GCS filters, and filter-header mismatches, and those
+ideas are now represented in the suite. It is not yet a strict adapter target:
+the app startup path still constructs and monitors Bitcoin RPC, and the
+regtest P2P helper hardcodes the default regtest peer port instead of accepting
+harness-supplied peers.
 
 ## Remaining Gaps
 
 - Reorg and persistence scenarios remain cataloged but not executable.
-- The self-consistent eclipse scenario remains cataloged because BIP157 cannot
-  guarantee detection when every peer serves a mutually consistent false filter
-  chain.
-- Several Neutrino baseline permutations remain cataloged only; the current
-  first-page header-sync failure must be resolved before they can produce useful
-  compact-filter evidence.
-- Optional network emulation with packet loss, reordering, duplication, and
-  privileged `netem` mode is still pending.
+- The self-consistent eclipse scenario remains cataloged as a trust-limit case.
+- Several Neutrino baseline permutations remain cataloged only.
+- Nakamoto needs a focused adapter/peerlab compatibility investigation before
+  its failures can be classified as implementation bugs.
+- Wasabi needs either upstream explicit-peer regtest support or a smaller
+  library-level adapter that bypasses the normal app startup path.
