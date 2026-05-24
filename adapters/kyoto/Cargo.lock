@@ -105,6 +105,7 @@ checksum = "32637268377fc7b10a8c6d51de3e7fba1ce5dd371a96e342b34e6078db558e7f"
 [[package]]
 name = "bip157"
 version = "0.6.0"
+source = "git+https://github.com/2140-dev/kyoto?rev=ae6b20f721a45cfc06d29d5cf03c8e5ac8148e50#ae6b20f721a45cfc06d29d5cf03c8e5ac8148e50"
 dependencies = [
  "bip324",
  "bitcoin",

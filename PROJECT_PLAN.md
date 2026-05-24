@@ -2,9 +2,9 @@
 
 Date: 2026-05-23
 
-This is the current active plan for `/home/user/bip157-bip158-test`.
-Completed adapter, matrix, Nix, and first adversarial-scenario work has been
-removed from the active task list.
+This is the current active plan for the conformance suite. Completed adapter,
+matrix, Nix, and first adversarial-scenario work has been removed from the
+active task list.
 
 ## Current Built State
 

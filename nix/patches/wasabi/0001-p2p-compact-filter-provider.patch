@@ -1,0 +1,3830 @@
+From 1f1fd64e2bb49b1ed897e8040acdc6110d90ef92 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Sun, 26 Apr 2026 14:11:47 -0300
+Subject: [PATCH 01/13] Abstract the filters provider
+
+---
+ WalletWasabi.Client/Global.cs         |  2 +-
+ WalletWasabi/Services/Synchronizer.cs | 70 ++++++++++++++-------------
+ 2 files changed, 38 insertions(+), 34 deletions(-)
+
+diff --git a/WalletWasabi.Client/Global.cs b/WalletWasabi.Client/Global.cs
+index c3b1eb0b84..3f73da2ae4 100644
+--- a/WalletWasabi.Client/Global.cs
++++ b/WalletWasabi.Client/Global.cs
+@@ -318,7 +318,7 @@ public class Global
+ 	private async Task ConfigureSynchronizerAsync(CancellationToken cancellationToken)
+ 	{
+ 		var supportsBlockFiltersResult = await _bitcoinRpcClient.SupportsBlockFiltersAsync(cancellationToken).ConfigureAwait(false);
+-		var filtersProviderResult = supportsBlockFiltersResult.Map(_ => new BitcoinRpcFilterProvider(_bitcoinRpcClient, _blockHeaders));
++		var filtersProviderResult = supportsBlockFiltersResult.Map(_ => FilterProviders.CreateBitcoinRpcFilterProvider(_bitcoinRpcClient, _blockHeaders));
+ 
+ 		if (filtersProviderResult is {IsOk: false, Error: var isIndexDisabled})
+ 		{
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 9ecd84853c..6c31f9f882 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -24,45 +24,22 @@ public abstract record FiltersResponse
+ 	public record NewFiltersAvailable(ChainHeight BestHeight, FilterModel[] Filters) : FiltersResponse;
+ }
+ 
+-public class BitcoinRpcFilterProvider(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain)
++public delegate Task<FilterFetchingResult> FilterProvider(uint fromHeight, uint256 fromHash, CancellationToken cancellationToken);
++
++public static class FilterProviders
+ {
+ 	private static readonly FiltersResponse.AlreadyOnBestBlock AlreadyOnBestBlock = new();
+ 	private static readonly FiltersResponse.BestBlockUnknown BestBlockUnknown = new();
+ 	private static FiltersResponse.NewFiltersAvailable NewFiltersAvailable(ChainHeight bestHeight, FilterModel[] filters) => new(bestHeight, filters);
+ 
+-	private async Task<uint256[]> GetBlockHashesAsync(uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+-	{
+-		if (blockHeaderChain.Tip?.Height > fromHeight)
+-		{
+-			return blockHeaderChain
+-				.EnumerateAfter(fromHash)
+-				.Select(x => x.HashBlock)
+-				.Take(1_000)
+-				.ToArray();
+-		}
+-
+-		var currentHeight = await bitcoinRpcClient.GetBlockCountAsync(cancellationToken).ConfigureAwait(false);
+-		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
+-		if (nbOfFiltersToFetch == 0)
+-		{
+-			return [];
+-		}
+-
+-		var batchClient = bitcoinRpcClient.PrepareBatch();
+-		var blockHashTasks = Enumerable.Range((int)fromHeight + 1, (int)nbOfFiltersToFetch)
+-			.Select(h => batchClient.GetBlockHashAsync(h, cancellationToken))
+-			.ToArray();
+-		await batchClient.SendBatchAsync(cancellationToken).ConfigureAwait(false);
+-
+-		var blockHashes = await Task.WhenAll(blockHashTasks).ConfigureAwait(false);
+-		return blockHashes;
+-	}
++	public static FilterProvider CreateBitcoinRpcFilterProvider(IRPCClient bitcoinClient, ConcurrentChain blockHeaderChain) =>
++		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinRpcAsync(bitcoinClient, blockHeaderChain, fromHash, fromHeight, cancellationToken);
+ 
+-	public async Task<FilterFetchingResult> GetFiltersAsync(uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinRpcAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+ 	{
+ 		try
+ 		{
+-			var blockHashes = await GetBlockHashesAsync(fromHash, fromHeight, cancellationToken).ConfigureAwait(false);
++			var blockHashes = await GetBlockHashesAsync(bitcoinRpcClient, blockHeaderChain, fromHash, fromHeight, cancellationToken).ConfigureAwait(false);
+ 			if (blockHashes.Length == 0)
+ 			{
+ 				return AlreadyOnBestBlock;
+@@ -103,14 +80,41 @@ public class BitcoinRpcFilterProvider(IRPCClient bitcoinRpcClient, ConcurrentCha
+ 			return FilterFetchingResult.Fail(TimeSpan.FromSeconds(15));
+ 		}
+ 	}
++
++	private static async Task<uint256[]> GetBlockHashesAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	{
++		if (blockHeaderChain.Tip?.Height > fromHeight)
++		{
++			return blockHeaderChain
++				.EnumerateAfter(fromHash)
++				.Select(x => x.HashBlock)
++				.Take(1_000)
++				.ToArray();
++		}
++
++		var currentHeight = await bitcoinRpcClient.GetBlockCountAsync(cancellationToken).ConfigureAwait(false);
++		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
++		if (nbOfFiltersToFetch == 0)
++		{
++			return [];
++		}
++
++		var heights = Enumerable.Range((int) fromHeight + 1, (int)nbOfFiltersToFetch).ToArray();
++		var batchClient = bitcoinRpcClient.PrepareBatch();
++		var blockHashTasks = heights.Select(h => batchClient.GetBlockHashAsync(h, cancellationToken)).ToArray();
++		await batchClient.SendBatchAsync(cancellationToken).ConfigureAwait(false);
++
++		var blockHashes = await Task.WhenAll(blockHashTasks).ConfigureAwait(false);
++		return blockHashes;
++	}
+ }
+ 
+ public static class Synchronizer
+ {
+-	public static MessageHandler<Unit> CreateFilterGenerator(BitcoinRpcFilterProvider filtersProvider, FilterStore filterStore, FilterHeaderChain filterHeaderChain, EventBus eventBus) =>
++	public static MessageHandler<Unit> CreateFilterGenerator(FilterProvider filtersProvider, FilterStore filterStore, FilterHeaderChain filterHeaderChain, EventBus eventBus) =>
+ 		(_, cancellationToken) => GenerateCompactFiltersAsync(filtersProvider, filterStore, filterHeaderChain, eventBus, cancellationToken);
+ 
+-	private static async Task<Unit> GenerateCompactFiltersAsync(BitcoinRpcFilterProvider filtersProvider, FilterStore filterStore, FilterHeaderChain filterHeaderChain, EventBus eventBus, CancellationToken cancellationToken)
++	private static async Task<Unit> GenerateCompactFiltersAsync(FilterProvider filtersProvider, FilterStore filterStore, FilterHeaderChain filterHeaderChain, EventBus eventBus, CancellationToken cancellationToken)
+ 	{
+ 		// Don't attempt synchronization without a valid tip hash
+ 		if (filterHeaderChain.TipHash is null)
+@@ -119,7 +123,7 @@ public static class Synchronizer
+ 			return Unit.Instance;
+ 		}
+ 
+-		var response = await filtersProvider.GetFiltersAsync(filterHeaderChain.TipHash, filterHeaderChain.TipHeight, cancellationToken)
++		var response = await filtersProvider(filterHeaderChain.TipHeight, filterHeaderChain.TipHash, cancellationToken)
+ 			.ConfigureAwait(false);
+ 
+ 		if (response.IsOk)
+-- 
+2.53.0
+
+
+From 856c897290b1f1b10ed6f82c18c74d6225da8051 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Sun, 26 Apr 2026 01:02:36 -0300
+Subject: [PATCH 02/13] Connect to nodes that provide compact filters
+
+---
+ WalletWasabi/Helpers/Constants.cs | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/WalletWasabi/Helpers/Constants.cs b/WalletWasabi/Helpers/Constants.cs
+index 7dd643bafe..53d5473b99 100644
+--- a/WalletWasabi/Helpers/Constants.cs
++++ b/WalletWasabi/Helpers/Constants.cs
+@@ -106,7 +106,7 @@ public static class Constants
+ 
+ 	public static readonly NodeRequirement NodeRequirements = new()
+ 	{
+-		RequiredServices = NodeServices.NODE_WITNESS,
++		RequiredServices = NodeServices.NODE_WITNESS | NodeServices.NODE_COMPACT_FILTERS,
+ 		MinVersion = ProtocolVersionWitnessVersion,
+ 		MinProtocolCapabilities = new ProtocolCapabilities { SupportGetBlock = true, SupportWitness = true, SupportMempoolQuery = true }
+ 	};
+-- 
+2.53.0
+
+
+From 0120d8d2e0f82d5874f2d40b3cddea249a97ce31 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Sun, 26 Apr 2026 14:12:30 -0300
+Subject: [PATCH 03/13] Add draft p2p filters provider
+
+---
+ WalletWasabi/Services/Synchronizer.cs | 36 +++++++++++++++++++++++++--
+ 1 file changed, 34 insertions(+), 2 deletions(-)
+
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 6c31f9f882..455798e7f2 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -1,3 +1,4 @@
++using System.Diagnostics;
+ using NBitcoin;
+ using NBitcoin.RPC;
+ using System.Linq;
+@@ -5,9 +6,12 @@ using System.Net.Http;
+ using System.Net.Sockets;
+ using System.Threading;
+ using System.Threading.Tasks;
++using NBitcoin.Protocol;
++using WabiSabi.Crypto.Randomness;
+ using WalletWasabi.Backend.Models;
+ using WalletWasabi.BitcoinRpc;
+ using WalletWasabi.Blockchain.Blocks;
++using WalletWasabi.Extensions;
+ using WalletWasabi.Helpers;
+ using WalletWasabi.Logging;
+ using WalletWasabi.Stores;
+@@ -81,7 +85,8 @@ public static class FilterProviders
+ 		}
+ 	}
+ 
+-	private static async Task<uint256[]> GetBlockHashesAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	private static async Task<uint256[]> GetBlockHashesAsync(IRPCClient bitcoinRpcClient,
++		ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+ 	{
+ 		if (blockHeaderChain.Tip?.Height > fromHeight)
+ 		{
+@@ -99,7 +104,7 @@ public static class FilterProviders
+ 			return [];
+ 		}
+ 
+-		var heights = Enumerable.Range((int) fromHeight + 1, (int)nbOfFiltersToFetch).ToArray();
++		var heights = Enumerable.Range((int) fromHeight + 1, (int) nbOfFiltersToFetch).ToArray();
+ 		var batchClient = bitcoinRpcClient.PrepareBatch();
+ 		var blockHashTasks = heights.Select(h => batchClient.GetBlockHashAsync(h, cancellationToken)).ToArray();
+ 		await batchClient.SendBatchAsync(cancellationToken).ConfigureAwait(false);
+@@ -107,6 +112,33 @@ public static class FilterProviders
+ 		var blockHashes = await Task.WhenAll(blockHashTasks).ConfigureAwait(false);
+ 		return blockHashes;
+ 	}
++
++	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinP2pAsync(ConcurrentChain headersChain,
++		NodesGroup nodes, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	{
++		var currentHeight = headersChain.Tip.Height;
++		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
++		var stopAtHeight = fromHeight + nbOfFiltersToFetch;
++		var stopAtHash = headersChain.GetBlock((int) stopAtHeight).HashBlock;
++
++		var node = nodes.ConnectedNodes.RandomElement(SecureRandom.Instance)!;
++		var filters = await node.GetFiltersAsync(fromHeight, stopAtHash, cancellationToken).ConfigureAwait(false);
++		Debug.Assert(filters.Length == nbOfFiltersToFetch);
++
++		var ret = new FilterModel[nbOfFiltersToFetch];
++		var prevHeader = uint256.Zero;
++		foreach (var (f, i) in filters.Select((f, i) => (f, i)))
++		{
++			var grfilter = new GolombRiceFilter(f.FilterBytes);
++			var grheader = grfilter.GetHeader(prevHeader);
++			var header = new SmartHeader(f.BlockHash, grheader, (uint) (currentHeight + i), DateTimeOffset.UtcNow);
++			var filter = new FilterModel(header, grfilter);
++			prevHeader = grheader;
++			ret[i] = filter;
++		}
++
++		return NewFiltersAvailable((uint) currentHeight, ret);
++	}
+ }
+ 
+ public static class Synchronizer
+-- 
+2.53.0
+
+
+From 1180ceeb1587748814ce409067eaebacdee73e7c Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Mon, 27 Apr 2026 10:11:15 -0300
+Subject: [PATCH 04/13] Download Compact Filter Headers
+
+---
+ WalletWasabi.Client/Global.cs                 |   3 +-
+ WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs   | 205 ++++++++++++++++++
+ .../Blockchain/Blocks/FilterHeaderChain.cs    |   6 +
+ 3 files changed, 213 insertions(+), 1 deletion(-)
+ create mode 100644 WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
+
+diff --git a/WalletWasabi.Client/Global.cs b/WalletWasabi.Client/Global.cs
+index 3f73da2ae4..de5b99e8d3 100644
+--- a/WalletWasabi.Client/Global.cs
++++ b/WalletWasabi.Client/Global.cs
+@@ -172,6 +172,7 @@ public class Global
+ 		var p2PDataDir = GetBitcoinP2pNetworkDirectory();
+ 		var chainBehavior = new BlockHeadersChainBehavior(_blockHeaders, FilterHeaders, EventBus);
+ 		var p2PBehavior = new P2pBehavior(mempoolService);
++		var fhBehavior = new CompactFilterHeadersBehavior(_blockHeaders, FilterHeaderChain, EventBus);
+ 
+ 		var nodesGroup = Network == Network.RegTest
+ 			? P2pNetwork.CreateNodesGroupForRegTest(p2PBehavior)
+@@ -179,7 +180,7 @@ public class Global
+ 				Network,
+ 				Config.UseTor != TorMode.Disabled ? TorSettings.SocksEndpoint : null,
+ 				p2PDataDir,
+-				Config.BlockOnlyMode ? [] : [chainBehavior, p2PBehavior]);
++				Config.BlockOnlyMode ? [] : [chainBehavior, fhBehavior, p2PBehavior]);
+ 
+ 		return nodesGroup;
+ 	}
+diff --git a/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs b/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
+new file mode 100644
+index 0000000000..b4a9a2e1c4
+--- /dev/null
++++ b/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
+@@ -0,0 +1,205 @@
++using System.Security.Cryptography;
++using NBitcoin;
++using NBitcoin.Protocol;
++using NBitcoin.Protocol.Behaviors;
++using WalletWasabi.Blockchain.Blocks;
++using WalletWasabi.Services;
++
++namespace WalletWasabi.BitcoinP2p;
++
++
++public class CompactFilterHeadersBehavior(ConcurrentChain chain, FilterHeaderChain filterHeaderChain, EventBus eventBus) : NodeBehavior
++{
++	private const int PageSize = 1000;
++	private static readonly TimeSpan TickSyncInterval = TimeSpan.FromMinutes(1);
++
++	// Prevents further sync attempts against this specific peer.
++	private volatile bool _invalidHeaderReceived;
++
++	private IDisposable? _tickSubscription;
++	private DateTime _lastTickSync = DateTime.MinValue;
++
++	protected override void AttachCore()
++	{
++		AttachedNode.StateChanged += OnStateChanged;
++		AttachedNode.MessageReceived += Intercept;
++		_tickSubscription = eventBus.Subscribe<Tick>(OnTick);
++	}
++
++	protected override void DetachCore()
++	{
++		AttachedNode.StateChanged -= OnStateChanged;
++		AttachedNode.MessageReceived -= Intercept;
++		_tickSubscription?.Dispose();
++	}
++
++	public override object Clone()
++		=> new CompactFilterHeadersBehavior(chain, filterHeaderChain, eventBus);
++
++	private void OnTick(Tick tick)
++	{
++		if (tick.DateTime - _lastTickSync >= TickSyncInterval)
++		{
++			_lastTickSync = tick.DateTime;
++			TrySync();
++		}
++	}
++
++	private void OnStateChanged(Node node, NodeState oldState)
++	{
++		// Once the handshake completes, kick off the initial sync.
++		if (node.State == NodeState.HandShaked)
++		{
++			TrySync();
++		}
++	}
++
++	private void Intercept(Node node, IncomingMessage message)
++	{
++		if (filterHeaderChain.Tip is null)
++		{
++			return;
++		}
++
++		// We only care about cfheaders responses.
++		if (message.Message.Payload is not CompactFilterHeadersPayload cfHeaders)
++		{
++			return;
++		}
++
++		// Ignore anything that isn't Basic filters.
++		if (cfHeaders.FilterType != FilterType.Basic)
++		{
++			return;
++		}
++
++		// BIP-157: cfheaders message contains FilterHashes (not FilterHeaders).
++		// NBitcoin names the property "FilterHeaders" but these are actually filter hashes.
++		var filterHashes = cfHeaders.FilterHeaders;
++		var batchCount = filterHashes.Count;
++		if (batchCount == 0)
++		{
++			return;
++		}
++
++		if (_invalidHeaderReceived)
++		{
++			return;
++		}
++
++		// Resolve the stop block so we know the height range of this batch.
++		var stopBlock = chain.GetBlock(cfHeaders.StopHash);
++		if (stopBlock == null)
++		{
++			return; // We don't know this block yet — chain not caught up.
++		}
++
++		int startHeight = stopBlock.Height - batchCount + 1;
++		if (startHeight < 0)
++		{
++			InvalidateNode();
++			return;
++		}
++
++		// Validate that PreviousFilterHeader matches our current tip's filter header.
++		// For genesis (height 0), the previous filter header should be uint256.Zero.
++		var localPrevFilterHeader = filterHeaderChain.Tip.BlockFilterHeader;
++		if (cfHeaders.PreviousFilterHeader != localPrevFilterHeader)
++		{
++			InvalidateNode();
++			return;
++		}
++
++		// Compute actual filter headers from filter hashes.
++		// BIP-157: filter_header = hash(filter_hash || previous_filter_header)
++		var prevFilterHeader = cfHeaders.PreviousFilterHeader;
++
++		for (var i = 0; i < batchCount; i++)
++		{
++			var block = chain.GetBlock(startHeight + i);
++			if (block == null)
++			{
++				// Gap in our chain — can't validate, abort.
++				return;
++			}
++
++			var filterHash = filterHashes[i];
++			var filterHeader = ComputeFilterHeader(filterHash, prevFilterHeader);
++
++			var smartHeader = new SmartHeader(block.HashBlock, filterHeader, (uint)block.Height, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
++			try
++			{
++				filterHeaderChain.AppendTip(smartHeader);
++			}
++			catch (InvalidOperationException)
++			{
++				InvalidateNode();
++				return;
++			}
++
++			prevFilterHeader = filterHeader;
++		}
++
++		// If the batch was full (peer may have more), keep paginating.
++		if (batchCount == PageSize)
++		{
++			TrySync();
++		}
++	}
++
++	private static uint256 ComputeFilterHeader(uint256 filterHash, uint256 prevFilterHeader)
++	{
++		Span<byte> data = stackalloc byte[64];
++		filterHash.ToBytes(data[..32]);
++		prevFilterHeader.ToBytes(data[32..]);
++		Span<byte> hash = stackalloc byte[32];
++		SHA256.HashData(SHA256.HashData(data), hash);
++		return new uint256(hash);
++	}
++
++	private void InvalidateNode()
++	{
++		_invalidHeaderReceived = true;
++		DetachCore();
++	}
++
++	private void TrySync()
++	{
++		var node = AttachedNode;
++		if (node is not {State: NodeState.HandShaked})
++		{
++			return;
++		}
++
++		if (_invalidHeaderReceived)
++		{
++			return;
++		}
++
++		var chainTip = chain.Tip;
++		var cfHeaderTip = filterHeaderChain.Tip;
++		if (cfHeaderTip is not {} nonNullCfHeaderTip)
++		{
++			return;
++		}
++		var startHeight = nonNullCfHeaderTip.Height + 1;
++
++		// Already caught up.
++		if (startHeight > chainTip.Height)
++		{
++			return;
++		}
++
++		// Cap the stop block to at most PageSize headers ahead.
++		var stopHeight = uint.Min(startHeight + PageSize - 1, (uint)chainTip.Height);
++		var stopBlock = chain.GetBlock((int)stopHeight);
++		if (stopBlock == null)
++		{
++			return;
++		}
++
++		var payload = new GetCompactFilterHeadersPayload(FilterType.Basic, (uint)startHeight, stopBlock.HashBlock);
++
++		node.SendMessage(payload);
++	}
++}
+diff --git a/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs b/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
+index 2da5981171..9aa063e01d 100644
+--- a/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
++++ b/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
+@@ -105,6 +105,12 @@ public class FilterHeaderChain
+ 			{
+ 				SmartHeader lastHeader = _chain[^1];
+ 
++				// The header is old
++				if (tip.Height <= lastHeader.Height)
++				{
++					return;
++				}
++
+ 				if (lastHeader.Height + 1 != tip.Height)
+ 				{
+ 					throw new InvalidOperationException($"Header height isn't one more than the previous header height. Actual: {lastHeader.Height}. Added: {tip.Height}.");
+-- 
+2.53.0
+
+
+From 0f22cb719fe2dfd3ce7bca7b32655f0bcd3ac15d Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Tue, 5 May 2026 17:49:23 -0300
+Subject: [PATCH 05/13] Download filter via P2P
+
+---
+ WalletWasabi.Client/Global.cs                 |  64 +-
+ .../Blocks/FilterHeaderChainTests.cs          |   8 +-
+ WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs   | 205 -----
+ .../BitcoinP2p/CompactFilterBehavior.cs       | 796 ++++++++++++++++++
+ .../BitcoinP2p/PageAssignmentTracker.cs       | 122 +++
+ .../Blockchain/Blocks/FilterHeaderChain.cs    |   1 +
+ WalletWasabi/Helpers/Constants.cs             |   2 +-
+ WalletWasabi/Services/Synchronizer.cs         | 103 ++-
+ 8 files changed, 1035 insertions(+), 266 deletions(-)
+ delete mode 100644 WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
+ create mode 100644 WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+ create mode 100644 WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+
+diff --git a/WalletWasabi.Client/Global.cs b/WalletWasabi.Client/Global.cs
+index de5b99e8d3..16f891d789 100644
+--- a/WalletWasabi.Client/Global.cs
++++ b/WalletWasabi.Client/Global.cs
+@@ -172,7 +172,6 @@ public class Global
+ 		var p2PDataDir = GetBitcoinP2pNetworkDirectory();
+ 		var chainBehavior = new BlockHeadersChainBehavior(_blockHeaders, FilterHeaders, EventBus);
+ 		var p2PBehavior = new P2pBehavior(mempoolService);
+-		var fhBehavior = new CompactFilterHeadersBehavior(_blockHeaders, FilterHeaderChain, EventBus);
+ 
+ 		var nodesGroup = Network == Network.RegTest
+ 			? P2pNetwork.CreateNodesGroupForRegTest(p2PBehavior)
+@@ -180,7 +179,7 @@ public class Global
+ 				Network,
+ 				Config.UseTor != TorMode.Disabled ? TorSettings.SocksEndpoint : null,
+ 				p2PDataDir,
+-				Config.BlockOnlyMode ? [] : [chainBehavior, fhBehavior, p2PBehavior]);
++				Config.BlockOnlyMode ? [] : [chainBehavior, p2PBehavior]);
+ 
+ 		return nodesGroup;
+ 	}
+@@ -319,13 +318,40 @@ public class Global
+ 	private async Task ConfigureSynchronizerAsync(CancellationToken cancellationToken)
+ 	{
+ 		var supportsBlockFiltersResult = await _bitcoinRpcClient.SupportsBlockFiltersAsync(cancellationToken).ConfigureAwait(false);
+-		var filtersProviderResult = supportsBlockFiltersResult.Map(_ => FilterProviders.CreateBitcoinRpcFilterProvider(_bitcoinRpcClient, _blockHeaders));
++		var filtersProvider = supportsBlockFiltersResult
++			.Map(_ => FilterProviders.CreateBitcoinRpcFilterProvider(_bitcoinRpcClient, _blockHeaders))
++			.Match(
++				rpcProvider => rpcProvider,
++				_ =>
++				{
++					var templateBehaviors = NodesGroup.NodeConnectionParameters.TemplateBehaviors;
++					var tip = FilterStore.GetTip()!.Header;
++					var synchronizationState = new CompactFilterBehavior.FilterSynchronizationState(_blockHeaders, FilterHeaders, tip.Height);
++					templateBehaviors.Add(new CompactFilterBehavior(synchronizationState, _blockHeaders, EventBus));
++
++					return FilterProviders.CreateBitcoinP2pFilterProvider(FilterHeaders, _blockHeaders, synchronizationState);
++				});
++
++
++		var (pause, resume, serviceLoop) =
++			Continuously(Synchronizer.CreateFilterGenerator(filtersProvider, FilterStore, FilterHeaders, EventBus));
+ 
+-		if (filtersProviderResult is {IsOk: false, Error: var isIndexDisabled})
++		if (supportsBlockFiltersResult.IsOk)
+ 		{
+-			if (isIndexDisabled)
++			EventBus.Subscribe<RpcStatusChanged>(e =>
+ 			{
+-				throw new Exception("\nWasabi is connected to a bitcoin RPC that doesn't provides compact filters (BIP158)."
++				var action = e.Status.Match(
++					x => x.Synchronized ? resume : pause,
++					_ => pause);
++				action();
++			}).DisposeUsing(_disposables);
++		}
++		else
++		{
++			var errorBecauseIndexIsDisabled = supportsBlockFiltersResult.Error;
++			if( errorBecauseIndexIsDisabled)
++			{
++				Logger.LogInfo("\nWasabi is connected to a bitcoin RPC that doesn't provides compact filters (BIP158)."
+ 								+ "\nCompact filters are disabled by default in Bitcoin and you have to enable them."
+ 								+ "\nIf you are using your own node then edit the bitcoin.conf file and add the line:"
+ 								+ "\nblockfilterindex=1"
+@@ -342,13 +368,10 @@ public class Global
+ 			{
+ 				Logger.LogWarning($"Was not able to connect to the Bitcoin RPC server '{Config.BitcoinRpcUri}' with the credentials provided. " +
+ 				                  "Please configure valid RPC credentials in settings and restart.");
+-				return;
+ 			}
+-		}
+ 
+-		var filtersProvider = filtersProviderResult.Value;
+-		var (pause, resume, serviceLoop) =
+-			Continuously(Synchronizer.CreateFilterGenerator(filtersProvider, FilterStore, FilterHeaders, EventBus));
++			await resume().ConfigureAwait(false);
++		}
+ 
+ 		Spawn("Synchronizer", Service("Wasabi Index-Based Synchronizer", serviceLoop), cancellationToken)
+ 			.DisposeUsing(_disposables);
+@@ -752,22 +775,3 @@ public class Global
+ 		}
+ 	}
+ }
+-
+-static class NBitcoinExtensions
+-{
+-	extension(ConcurrentChain blockHeaders)
+-	{
+-		public byte[] ToBlockHashesBytes()
+-		{
+-			return blockHeaders.ToBytes(new ConcurrentChain.ChainSerializationFormat
+-				{SerializeBlockHeader = false, SerializePrecomputedBlockHash = true});
+-		}
+-
+-		private byte[] ToBytes(ConcurrentChain.ChainSerializationFormat format)
+-		{
+-			var ms = new MemoryStream();
+-			blockHeaders.WriteTo(ms, format);
+-			return ms.ToArray();
+-		}
+-	}
+-}
+diff --git a/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs b/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
+index a85001872f..5122668fc2 100644
+--- a/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
++++ b/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
+@@ -25,8 +25,8 @@ public class FilterHeaderChainTests
+ 		SmartHeader header = CreateGenesisHeader();
+ 		chain.AppendTip(header);
+ 
+-		InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => chain.AppendTip(header));
+-		Assert.StartsWith("Header height isn't one more than the previous header height.", ex.Message, StringComparison.Ordinal);
++		chain.AppendTip(header);
++		Assert.Equal(1, chain.HashCount);
+ 	}
+ 
+ 	/// <summary>
+@@ -49,8 +49,8 @@ public class FilterHeaderChainTests
+ 		// Attempt to replace the newly added header.
+ 		header = CreateSmartHeader(new uint256(778797897), chain.TipHash!, height);
+ 
+-		InvalidOperationException ex = Assert.Throws<InvalidOperationException>(() => chain.AppendTip(header));
+-		Assert.StartsWith("Header height isn't one more than the previous header height.", ex.Message, StringComparison.Ordinal);
++		chain.AppendTip(header);
++		Assert.Equal(2, chain.HashCount);
+ 	}
+ 
+ 	/// <summary>
+diff --git a/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs b/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
+deleted file mode 100644
+index b4a9a2e1c4..0000000000
+--- a/WalletWasabi/BitcoinP2p/CfHeaderBehavior.cs
++++ /dev/null
+@@ -1,205 +0,0 @@
+-using System.Security.Cryptography;
+-using NBitcoin;
+-using NBitcoin.Protocol;
+-using NBitcoin.Protocol.Behaviors;
+-using WalletWasabi.Blockchain.Blocks;
+-using WalletWasabi.Services;
+-
+-namespace WalletWasabi.BitcoinP2p;
+-
+-
+-public class CompactFilterHeadersBehavior(ConcurrentChain chain, FilterHeaderChain filterHeaderChain, EventBus eventBus) : NodeBehavior
+-{
+-	private const int PageSize = 1000;
+-	private static readonly TimeSpan TickSyncInterval = TimeSpan.FromMinutes(1);
+-
+-	// Prevents further sync attempts against this specific peer.
+-	private volatile bool _invalidHeaderReceived;
+-
+-	private IDisposable? _tickSubscription;
+-	private DateTime _lastTickSync = DateTime.MinValue;
+-
+-	protected override void AttachCore()
+-	{
+-		AttachedNode.StateChanged += OnStateChanged;
+-		AttachedNode.MessageReceived += Intercept;
+-		_tickSubscription = eventBus.Subscribe<Tick>(OnTick);
+-	}
+-
+-	protected override void DetachCore()
+-	{
+-		AttachedNode.StateChanged -= OnStateChanged;
+-		AttachedNode.MessageReceived -= Intercept;
+-		_tickSubscription?.Dispose();
+-	}
+-
+-	public override object Clone()
+-		=> new CompactFilterHeadersBehavior(chain, filterHeaderChain, eventBus);
+-
+-	private void OnTick(Tick tick)
+-	{
+-		if (tick.DateTime - _lastTickSync >= TickSyncInterval)
+-		{
+-			_lastTickSync = tick.DateTime;
+-			TrySync();
+-		}
+-	}
+-
+-	private void OnStateChanged(Node node, NodeState oldState)
+-	{
+-		// Once the handshake completes, kick off the initial sync.
+-		if (node.State == NodeState.HandShaked)
+-		{
+-			TrySync();
+-		}
+-	}
+-
+-	private void Intercept(Node node, IncomingMessage message)
+-	{
+-		if (filterHeaderChain.Tip is null)
+-		{
+-			return;
+-		}
+-
+-		// We only care about cfheaders responses.
+-		if (message.Message.Payload is not CompactFilterHeadersPayload cfHeaders)
+-		{
+-			return;
+-		}
+-
+-		// Ignore anything that isn't Basic filters.
+-		if (cfHeaders.FilterType != FilterType.Basic)
+-		{
+-			return;
+-		}
+-
+-		// BIP-157: cfheaders message contains FilterHashes (not FilterHeaders).
+-		// NBitcoin names the property "FilterHeaders" but these are actually filter hashes.
+-		var filterHashes = cfHeaders.FilterHeaders;
+-		var batchCount = filterHashes.Count;
+-		if (batchCount == 0)
+-		{
+-			return;
+-		}
+-
+-		if (_invalidHeaderReceived)
+-		{
+-			return;
+-		}
+-
+-		// Resolve the stop block so we know the height range of this batch.
+-		var stopBlock = chain.GetBlock(cfHeaders.StopHash);
+-		if (stopBlock == null)
+-		{
+-			return; // We don't know this block yet — chain not caught up.
+-		}
+-
+-		int startHeight = stopBlock.Height - batchCount + 1;
+-		if (startHeight < 0)
+-		{
+-			InvalidateNode();
+-			return;
+-		}
+-
+-		// Validate that PreviousFilterHeader matches our current tip's filter header.
+-		// For genesis (height 0), the previous filter header should be uint256.Zero.
+-		var localPrevFilterHeader = filterHeaderChain.Tip.BlockFilterHeader;
+-		if (cfHeaders.PreviousFilterHeader != localPrevFilterHeader)
+-		{
+-			InvalidateNode();
+-			return;
+-		}
+-
+-		// Compute actual filter headers from filter hashes.
+-		// BIP-157: filter_header = hash(filter_hash || previous_filter_header)
+-		var prevFilterHeader = cfHeaders.PreviousFilterHeader;
+-
+-		for (var i = 0; i < batchCount; i++)
+-		{
+-			var block = chain.GetBlock(startHeight + i);
+-			if (block == null)
+-			{
+-				// Gap in our chain — can't validate, abort.
+-				return;
+-			}
+-
+-			var filterHash = filterHashes[i];
+-			var filterHeader = ComputeFilterHeader(filterHash, prevFilterHeader);
+-
+-			var smartHeader = new SmartHeader(block.HashBlock, filterHeader, (uint)block.Height, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+-			try
+-			{
+-				filterHeaderChain.AppendTip(smartHeader);
+-			}
+-			catch (InvalidOperationException)
+-			{
+-				InvalidateNode();
+-				return;
+-			}
+-
+-			prevFilterHeader = filterHeader;
+-		}
+-
+-		// If the batch was full (peer may have more), keep paginating.
+-		if (batchCount == PageSize)
+-		{
+-			TrySync();
+-		}
+-	}
+-
+-	private static uint256 ComputeFilterHeader(uint256 filterHash, uint256 prevFilterHeader)
+-	{
+-		Span<byte> data = stackalloc byte[64];
+-		filterHash.ToBytes(data[..32]);
+-		prevFilterHeader.ToBytes(data[32..]);
+-		Span<byte> hash = stackalloc byte[32];
+-		SHA256.HashData(SHA256.HashData(data), hash);
+-		return new uint256(hash);
+-	}
+-
+-	private void InvalidateNode()
+-	{
+-		_invalidHeaderReceived = true;
+-		DetachCore();
+-	}
+-
+-	private void TrySync()
+-	{
+-		var node = AttachedNode;
+-		if (node is not {State: NodeState.HandShaked})
+-		{
+-			return;
+-		}
+-
+-		if (_invalidHeaderReceived)
+-		{
+-			return;
+-		}
+-
+-		var chainTip = chain.Tip;
+-		var cfHeaderTip = filterHeaderChain.Tip;
+-		if (cfHeaderTip is not {} nonNullCfHeaderTip)
+-		{
+-			return;
+-		}
+-		var startHeight = nonNullCfHeaderTip.Height + 1;
+-
+-		// Already caught up.
+-		if (startHeight > chainTip.Height)
+-		{
+-			return;
+-		}
+-
+-		// Cap the stop block to at most PageSize headers ahead.
+-		var stopHeight = uint.Min(startHeight + PageSize - 1, (uint)chainTip.Height);
+-		var stopBlock = chain.GetBlock((int)stopHeight);
+-		if (stopBlock == null)
+-		{
+-			return;
+-		}
+-
+-		var payload = new GetCompactFilterHeadersPayload(FilterType.Basic, (uint)startHeight, stopBlock.HashBlock);
+-
+-		node.SendMessage(payload);
+-	}
+-}
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+new file mode 100644
+index 0000000000..114e9906c0
+--- /dev/null
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -0,0 +1,796 @@
++using System.Collections.Generic;
++using System.Diagnostics.CodeAnalysis;
++using System.Runtime.CompilerServices;
++using System.Security.Cryptography;
++using System.Threading;
++using System.Threading.Tasks;
++using NBitcoin;
++using NBitcoin.Protocol;
++using NBitcoin.Protocol.Behaviors;
++using WalletWasabi.Backend.Models;
++using WalletWasabi.Blockchain.Blocks;
++using WalletWasabi.Helpers;
++using WalletWasabi.Logging;
++using WalletWasabi.Services;
++
++namespace WalletWasabi.BitcoinP2p;
++
++public class CompactFilterBehavior(
++	FilterSynchronizationState synchronizationState,
++	ConcurrentChain blockHeaderChain,
++	EventBus eventBus)
++	: NodeBehavior
++{
++	private static readonly TimeSpan TickSyncInterval = TimeSpan.FromSeconds(2);
++
++	private readonly List<CompactFilterPayload> _collectedFilters = [];
++
++	private PageAssignment? _assignedHeaderPage;
++	private PageAssignment? _assignedFilterPage;
++
++	private volatile bool _invalidReceived;
++
++
++	public CompactFilterBehavior(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders, ChainHeight tipHeight,
++		EventBus eventBus)
++		: this(new FilterSynchronizationState(blockHeaders, filterHeaders, tipHeight), blockHeaders, eventBus)
++	{
++	}
++
++	public CompactFilterBehavior(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders, EventBus eventBus)
++		: this(new FilterSynchronizationState(blockHeaders, filterHeaders), blockHeaders, eventBus)
++	{
++	}
++
++	protected override void AttachCore()
++	{
++		AttachedNode.StateChanged += OnStateChanged;
++		AttachedNode.MessageReceived += OnMessageReceived;
++	}
++
++	protected override void DetachCore()
++	{
++		AttachedNode.StateChanged -= OnStateChanged;
++		AttachedNode.MessageReceived -= OnMessageReceived;
++
++		ReleaseAssignments();
++	}
++
++	public override object Clone() =>
++		new CompactFilterBehavior(synchronizationState, blockHeaderChain, eventBus);
++
++	private void OnStateChanged(Node node, NodeState oldState)
++	{
++		Logger.LogDebug($"Node {node.Peer.Endpoint} state changed from {oldState} to {node.State}");
++
++		// Once the handshake completes, check if node supports compact filters
++		if (node.State != NodeState.HandShaked)
++		{
++			return;
++		}
++
++		if (node.PeerVersion?.Services.HasFlag(NodeServices.NODE_COMPACT_FILTERS) != true)
++		{
++			Logger.LogDebug($"Node {node.Peer.Endpoint} does not support NODE_COMPACT_FILTERS, will not sync");
++			return;
++		}
++
++		Logger.LogDebug($"Node {node.Peer.Endpoint} supports NODE_COMPACT_FILTERS, starting sync");
++
++		// Subscribe to tick events for periodic sync attempts
++		var lastTickSync = DateTime.MinValue;
++		var tickSubscription = eventBus.Subscribe<Tick>(tick =>
++		{
++			var nowUtc = tick.DateTime;
++			if (nowUtc - lastTickSync < TickSyncInterval)
++			{
++				return;
++			}
++
++			lastTickSync = tick.DateTime;
++			TrySync(node);
++		});
++		RegisterDisposable(tickSubscription);
++
++		TrySync(node);
++	}
++
++	private void OnMessageReceived(Node node, IncomingMessage message)
++	{
++		if (!IsNodeInValidState(node))
++		{
++			return;
++		}
++
++		if (_assignedHeaderPage is {} headerPageAssignment &&
++		    message.Message.Payload is CompactFilterHeadersPayload {FilterType: FilterType.Basic} cfHeaders)
++		{
++			HandleFilterHeaderMessage(node, cfHeaders, headerPageAssignment);
++			return;
++		}
++
++		if (_assignedFilterPage is {} filterPageAssignment &&
++		    message.Message.Payload is CompactFilterPayload {FilterType: FilterType.Basic} filterPayload)
++		{
++			HandleFilterMessage(node, filterPayload, filterPageAssignment);
++		}
++	}
++
++	private void HandleFilterHeaderMessage(Node node, CompactFilterHeadersPayload cfHeaders, PageAssignment assignment)
++	{
++		var filterHashes = cfHeaders.FilterHeaders;
++		var batchCount = filterHashes.Count;
++
++		Logger.LogDebug(
++			$"Received {batchCount} filter headers from {node.Peer.Endpoint} for page {assignment.StartHeight}-{assignment.StopHeight}");
++
++		if (batchCount == 0)
++		{
++			Logger.LogDebug("Received empty cfheaders batch");
++			HandleInvalid(node, "Invalid compact filter headers received");
++			return;
++		}
++
++		// Resolve the stop block to validate the response
++		var stopBlock = blockHeaderChain.GetBlock(cfHeaders.StopHash);
++		if (stopBlock == null)
++		{
++			return;
++		}
++
++		var startHeight = stopBlock.Height - batchCount + 1;
++		if (startHeight < 0)
++		{
++			Logger.LogWarning(
++				$"Invalid batch - start height {startHeight} is negative (stopHeight={stopBlock.Height}, batchCount={batchCount})");
++			HandleInvalid(node, "Invalid compact filter headers received");
++			return;
++		}
++
++		// Verify this matches our assignment
++		if ((uint) startHeight != assignment.StartHeight)
++		{
++			Logger.LogWarning(
++				$"Received headers for wrong range - expected {assignment.StartHeight}, got {startHeight}");
++			HandleInvalid(node, "Invalid compact filter headers received");
++			return;
++		}
++
++		// Validate headers using shared state
++		var validatedHeaders = synchronizationState.ValidateFilterHeaders(
++			assignment,
++			filterHashes.ToArray(),
++			cfHeaders.PreviousFilterHeader);
++
++		if (validatedHeaders is null)
++		{
++			Logger.LogWarning(
++				$"Validation failed for filter header page {assignment.StartHeight}-{assignment.StopHeight}");
++			HandleInvalid(node, "Invalid compact filter headers received");
++			return;
++		}
++
++		Logger.LogInfo($"Successfully validated filter header page {assignment.StartHeight}-{assignment.StopHeight}");
++
++		// Report success to shared state
++		synchronizationState.OnHeaderPageCompleted(assignment.StartHeight, validatedHeaders);
++		_assignedHeaderPage = null;
++
++		// Immediately try to fetch the next page
++		TrySync(node);
++	}
++
++	private void HandleFilterMessage(Node node, CompactFilterPayload filterPayload, PageAssignment assignment)
++	{
++		_collectedFilters.Add(filterPayload);
++
++		// Check if we've received all filters for this page
++		if (filterPayload.BlockHash != assignment.StopHash && _collectedFilters.Count < assignment.Count)
++		{
++			return;
++		}
++
++		Logger.LogDebug(
++			$"Page {assignment.StartHeight}-{assignment.StopHeight} complete ({_collectedFilters.Count}/{assignment.Count} filters)");
++
++		var filters = _collectedFilters.ToArray();
++		_collectedFilters.Clear();
++
++		// Validate all filters
++		var validatedFilters = ValidateFilters(assignment.StartHeight, filters);
++
++		if (validatedFilters is null)
++		{
++			// Validation failed - disconnect and release assignment
++			Logger.LogWarning($"Validation failed for page {assignment.StartHeight}-{assignment.StopHeight}");
++			HandleInvalid(node, "Invalid compact filters received");
++			return;
++		}
++
++		Logger.LogInfo($"Successfully validated page {assignment.StartHeight}-{assignment.StopHeight}");
++
++		// Report success
++		synchronizationState.OnFilterPageCompleted(assignment.StartHeight, validatedFilters);
++		_assignedFilterPage = null;
++
++		// Immediately try to fetch the next page
++		TrySync(node);
++	}
++
++	private FilterModel[]? ValidateFilters(uint startHeight, CompactFilterPayload[] filters)
++	{
++		if (filters.Length == 0)
++		{
++			Logger.LogWarning("Received empty filter batch");
++			return null;
++		}
++
++		var result = new FilterModel[filters.Length];
++
++		// For the first filter, we need the previous filter header
++		// This comes from either the shared state (last emitted) or the filter header chain
++		var prevFilterHeader = startHeight == 1
++			? uint256.Zero
++			: synchronizationState.GetExpectedFilterHeader(startHeight - 1);
++
++		if (prevFilterHeader is null)
++		{
++			Logger.LogWarning(
++				$"Cannot validate filters: previous filter header not available for height {startHeight}");
++			return null;
++		}
++
++		for (var i = 0; i < filters.Length; i++)
++		{
++			var filterPayload = filters[i];
++			var height = startHeight + (uint) i;
++
++			// Get expected filter header from the pre-synced chain
++			var expectedHeader = synchronizationState.GetExpectedFilterHeader(height);
++			if (expectedHeader is null)
++			{
++				Logger.LogWarning($"Cannot validate filter: expected header not available for height {height}");
++				return null;
++			}
++
++			// Compute actual filter header
++			var grFilterResult = Result<GolombRiceFilter, Exception>
++				.Catch(() => new GolombRiceFilter(filterPayload.FilterBytes));
++
++			if (!grFilterResult.IsOk)
++			{
++				Logger.LogWarning($"Malformed Golomb-Rice filter at height {height}: {grFilterResult.Error.Message}");
++				return null;
++			}
++
++			var grFilter = grFilterResult.Value;
++			var actualHeader = grFilter.GetHeader(prevFilterHeader);
++
++			// Validate
++			if (actualHeader != expectedHeader)
++			{
++				Logger.LogWarning(
++					$"Invalid filter at height {height}: expected header {expectedHeader}, got {actualHeader}");
++				return null;
++			}
++
++			// Get block info for the SmartHeader
++			var block = blockHeaderChain.GetBlock((int) height);
++			if (block is null)
++			{
++				Logger.LogWarning($"Block header not available for height {height}");
++				return null;
++			}
++
++			var smartHeader = new SmartHeader(
++				filterPayload.BlockHash,
++				actualHeader,
++				height,
++				block.Header.BlockTime.ToUnixTimeSeconds());
++
++			result[i] = new FilterModel(smartHeader, grFilter);
++
++			// Update for next iteration
++			prevFilterHeader = actualHeader;
++		}
++
++		return result;
++	}
++
++	private void TrySync(Node node)
++	{
++		if (!IsNodeInValidState(node))
++		{
++			return;
++		}
++
++		TrySyncHeaders(node);
++		TrySyncFilters(node);
++	}
++
++	private void TrySyncFilters(Node node)
++	{
++		if (_assignedFilterPage is not null)
++		{
++			return;
++		}
++
++		if (!synchronizationState.TryAssignFilterPage(out var filterAssignment))
++		{
++			return;
++		}
++
++		_assignedFilterPage = filterAssignment;
++		Logger.LogDebug(
++			$"Assigned page {filterAssignment.StartHeight}-{filterAssignment.StopHeight} to node {node.Peer.Endpoint}");
++
++		_collectedFilters.Clear();
++
++		var payload = new GetCompactFiltersPayload(FilterType.Basic, filterAssignment.StartHeight,
++			filterAssignment.StopHash);
++		node.SendMessage(payload);
++	}
++
++	private void TrySyncHeaders(Node node)
++	{
++		if (_assignedHeaderPage is not null)
++		{
++			return;
++		}
++
++		if (!synchronizationState.TryAssignHeaderPage(out var headerAssignment))
++		{
++			return;
++		}
++
++		_assignedHeaderPage = headerAssignment;
++		Logger.LogDebug($"Assigned filter header page {headerAssignment.StartHeight}-{headerAssignment.StopHeight} to node {node.Peer.Endpoint}");
++
++		var payload = new GetCompactFilterHeadersPayload(FilterType.Basic, headerAssignment.StartHeight,
++			headerAssignment.StopHash);
++		node.SendMessage(payload);
++	}
++
++	private void HandleInvalid(Node node, string reason)
++	{
++		_invalidReceived = true;
++
++		ReleaseAssignments();
++
++		Logger.LogWarning($"Disconnecting node {node.Peer.Endpoint}: {reason}");
++
++		// Disconnect the node
++		node.DisconnectAsync(reason);
++	}
++
++	private void ReleaseAssignments()
++	{
++		if (_assignedHeaderPage is not null)
++		{
++			synchronizationState.OnHeaderNodeDisconnected(_assignedHeaderPage);
++			_assignedHeaderPage = null;
++		}
++
++		if (_assignedFilterPage is not null)
++		{
++			synchronizationState.OnFilterNodeDisconnected(_assignedFilterPage);
++			_assignedFilterPage = null;
++		}
++
++		_collectedFilters.Clear();
++	}
++
++	private bool IsNodeInValidState(Node node)
++	{
++		if (_invalidReceived)
++		{
++			return false;
++		}
++
++		if (node is not {State: NodeState.HandShaked})
++		{
++			return false;
++		}
++
++		return true;
++	}
++}
++
++public class FilterSynchronizationState
++{
++	private static readonly TimeSpan HeaderAssignmentTimeout = TimeSpan.FromSeconds(30);
++	private static readonly TimeSpan FilterAssignmentTimeout = TimeSpan.FromSeconds(60);
++	private const int HeaderPageSize = 1_000;
++	private const int FilterPageSize = 400;
++
++	private readonly Lock _lock = new();
++	private readonly ConcurrentChain _blockHeaderChain;
++	private readonly FilterHeaderChain _filterHeaderChain;
++	private readonly TimeProvider _timeProvider;
++
++	private readonly PageAssignmentTracker<HeaderPage> _headerTracker;
++	private readonly PageAssignmentTracker<FilterPage> _filterTracker;
++
++
++	// Currently assigned filter fetches: pageStartHeight -> in-progress
++
++	// The filter page currently waiting to be consumed by the Synchronizer (null if none)
++	private FilterPage? _readyFilterPage;
++
++	// Signal for when a new filter page becomes ready
++	private TaskCompletionSource _filterPageReadySignal = new();
++
++	public FilterSynchronizationState(ConcurrentChain blockHeaderChain, FilterHeaderChain filterHeaderChain,
++		TimeProvider? timeProvider = null)
++	{
++		_blockHeaderChain = blockHeaderChain;
++		_filterHeaderChain = filterHeaderChain;
++		_timeProvider = timeProvider ?? TimeProvider.System;
++
++		var initialHeaderHeight = _filterHeaderChain.Tip?.Height ?? 0;
++		_headerTracker = new PageAssignmentTracker<HeaderPage>(initialHeaderHeight, _timeProvider);
++		_filterTracker = new PageAssignmentTracker<FilterPage>(0, _timeProvider);
++	}
++
++	public FilterSynchronizationState(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders,
++		ChainHeight tipHeight, TimeProvider? timeProvider = null)
++		: this(blockHeaders, filterHeaders, timeProvider)
++	{
++		_filterTracker = new PageAssignmentTracker<FilterPage>(tipHeight, _timeProvider);
++	}
++
++	#region Filter Header Methods
++
++	public bool TryAssignHeaderPage([NotNullWhen(true)] out PageAssignment? assignment)
++	{
++		assignment = null;
++		lock (_lock)
++		{
++			// Check for and release any stale header assignments
++			if (_headerTracker.GetOldestStaleAssignment(HeaderAssignmentTimeout) is { } staleHeaderHeight)
++			{
++				_headerTracker.RemoveActiveAssignment(staleHeaderHeight);
++				Logger.LogWarning(
++					$"Auto-released stale filter header assignment at height {staleHeaderHeight} (timeout: 60s)");
++			}
++
++			var chainTip = _blockHeaderChain.Tip;
++
++			// Find the next page to assign
++			var nextPageStart = _headerTracker.GetNextPageStartHeight(HeaderPageSize);
++
++			// Nothing to fetch if we're caught up
++			if (nextPageStart > chainTip.Height)
++			{
++				return false;
++			}
++
++			// Calculate stop height (limited by chain tip and page size)
++			var stopHeight = (uint) Math.Min(nextPageStart + HeaderPageSize - 1, chainTip.Height);
++
++			// Get the stop block hash
++			var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
++
++			// Capture the expected previous filter header for this page
++			var expectedPreviousFilterHeader = nextPageStart == 1
++				? uint256.Zero
++				: _filterHeaderChain[nextPageStart - 1]?.BlockFilterHeader;
++
++			// Don't assign this page if we don't have the previous filter header yet
++			if (expectedPreviousFilterHeader is null)
++			{
++				return false;
++			}
++
++			// Track this assignment so other nodes don't get the same page
++			_headerTracker.AddActiveAssignment(nextPageStart);
++
++			assignment = new PageAssignment(nextPageStart, stopHeight, stopBlock.HashBlock);
++			return true;
++		}
++	}
++
++	public void OnHeaderPageCompleted(uint pageStartHeight, SmartHeader[] headers)
++	{
++		lock (_lock)
++		{
++			// Remove from active assignments
++			_headerTracker.MoveActiveToPendingAssignment(pageStartHeight, new HeaderPage(pageStartHeight, headers));
++
++			// Process any pages that are now ready
++			ProcessPendingHeaderPages();
++		}
++	}
++
++	public void OnHeaderNodeDisconnected(PageAssignment assignedPage)
++	{
++		lock (_lock)
++		{
++			_headerTracker.RemoveActiveAssignment(assignedPage.StartHeight);
++		}
++
++		Logger.LogDebug($"Node disconnected, released filter header page {assignedPage.StartHeight} for reassignment");
++	}
++
++	public SmartHeader[]? ValidateFilterHeaders(
++		PageAssignment assignment,
++		uint256[] filterHashes,
++		uint256 declaredPreviousFilterHeader)
++	{
++		// Recalculate the expected previous filter header from the chain
++		var expectedPreviousFilterHeader = assignment.StartHeight == 1
++			? uint256.Zero
++			: _filterHeaderChain[assignment.StartHeight - 1]?.BlockFilterHeader;
++
++		if (expectedPreviousFilterHeader is null)
++		{
++			Logger.LogWarning($"Cannot validate: previous filter header not available for page {assignment.StartHeight}");
++			return null;
++		}
++
++		// Validate against the expected previous filter header
++		if (declaredPreviousFilterHeader != expectedPreviousFilterHeader)
++		{
++			Logger.LogWarning(
++				$"Previous filter header mismatch for page {assignment.StartHeight} - expected {expectedPreviousFilterHeader}, received {declaredPreviousFilterHeader}");
++			return null;
++		}
++
++		var result = new SmartHeader[filterHashes.Length];
++		var prevFilterHeader = declaredPreviousFilterHeader;
++
++		for (var i = 0; i < filterHashes.Length; i++)
++		{
++			var height = assignment.StartHeight + (uint) i;
++			var block = _blockHeaderChain.GetBlock((int) height);
++			if (block == null)
++			{
++				Logger.LogWarning($"Block header not found at height {height}, aborting batch validation");
++				return null;
++			}
++
++			var filterHash = filterHashes[i];
++			var filterHeader = ComputeFilterHeader(filterHash, prevFilterHeader);
++
++			result[i] = new SmartHeader(
++				block.HashBlock,
++				filterHeader,
++				height,
++				block.Header.BlockTime);
++
++			prevFilterHeader = filterHeader;
++		}
++
++		return result;
++	}
++
++	private void ProcessPendingHeaderPages()
++	{
++		// Process pages in order
++		while (true)
++		{
++			var nextExpectedStart = _headerTracker.LastHeight + 1;
++
++			if (!_headerTracker.TryRemovePendingPage(nextExpectedStart, out var pendingPage))
++			{
++				// Next page not available yet
++				break;
++			}
++
++			// Append all headers from this page
++			foreach (var header in pendingPage.Headers)
++			{
++				try
++				{
++					_filterHeaderChain.AppendTip(header);
++					_headerTracker.SetLastHeight(header.Height);
++				}
++				catch (InvalidOperationException ex)
++				{
++					Logger.LogError($"Failed to append filter header at height {header.Height}: {ex.Message}");
++					// Stop processing - this shouldn't happen since headers were pre-validated
++					return;
++				}
++			}
++
++			Logger.LogInfo(
++				$"Successfully processed filter header page {pendingPage.StartHeight}, new tip at height {_headerTracker.LastHeight}");
++		}
++	}
++
++	private static uint256 ComputeFilterHeader(uint256 filterHash, uint256 prevFilterHeader)
++	{
++		Span<byte> data = stackalloc byte[64];
++		filterHash.ToBytes(data[..32]);
++		prevFilterHeader.ToBytes(data[32..]);
++		Span<byte> hash = stackalloc byte[32];
++		SHA256.HashData(SHA256.HashData(data), hash);
++		return new uint256(hash);
++	}
++
++	#endregion
++
++
++	public async IAsyncEnumerable<FilterModel> GetNextPageFiltersAsync(
++		[EnumeratorCancellation] CancellationToken cancellationToken)
++	{
++		var page = await WaitForReadyPageAsync(cancellationToken).ConfigureAwait(false);
++
++		Logger.LogDebug($"Starting to yield {page.Filters.Length} filters from page {page.StartHeight}");
++
++		foreach (var filter in page.Filters)
++		{
++			cancellationToken.ThrowIfCancellationRequested();
++			yield return filter;
++		}
++
++		var lastFilter = page.Filters[^1];
++		AcknowledgeFilterPageConsumed(lastFilter.Header.Height);
++	}
++
++	private async ValueTask<FilterPage> WaitForReadyPageAsync(CancellationToken cancellationToken)
++	{
++		while (true)
++		{
++			Task waitTask;
++
++			lock (_lock)
++			{
++				if (_readyFilterPage is { } page)
++				{
++					return page;
++				}
++
++				waitTask = _filterPageReadySignal.Task;
++
++				Logger.LogTrace($"No page ready yet - pending pages: {_filterTracker.PendingCount}, active assignments: {_filterTracker.ActiveCount}");
++			}
++
++			await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
++		}
++	}
++
++	public bool TryAssignFilterPage([NotNullWhen(true)] out PageAssignment? assignment)
++	{
++		assignment = null;
++		lock (_lock)
++		{
++			// Check for and release any stale filter assignments (older than 60 seconds)
++			if (_filterTracker.GetOldestStaleAssignment(FilterAssignmentTimeout) is { } staleFilterHeight)
++			{
++				_filterTracker.RemoveActiveAssignment(staleFilterHeight);
++				Logger.LogWarning(
++					$"Auto-released stale filter assignment at height {staleFilterHeight} (timeout: 60s)");
++			}
++
++			// Check if filter headers are synced ahead
++			var filterHeadersTip = _filterHeaderChain.Tip!;
++
++			// Find the next page to assign
++			var nextPageStart = _filterTracker.GetNextPageStartHeight(FilterPageSize);
++
++			// Nothing to fetch if we're caught up with filter headers
++			if (nextPageStart > filterHeadersTip.Height)
++			{
++				Logger.LogTrace(
++					$"TryAssignFilterPage - caught up (next page start {nextPageStart} > filter headers tip {filterHeadersTip.Height})");
++				return false;
++			}
++
++			// Calculate stop height (limited by filter headers tip and page size)
++			var stopHeight = Math.Min(nextPageStart + FilterPageSize - 1, filterHeadersTip.Height);
++
++			// Get the stop block hash
++			var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
++
++			// Track this assignment so other nodes don't get the same page
++			_filterTracker.AddActiveAssignment(nextPageStart);
++
++			Logger.LogDebug(
++				$"Assigned filter page {nextPageStart}-{stopHeight} (active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount})");
++
++			assignment = new PageAssignment(nextPageStart, stopHeight, stopBlock.HashBlock);
++			return true;
++		}
++	}
++
++	public void OnFilterPageCompleted(uint pageStartHeight, FilterModel[] filters)
++	{
++		lock (_lock)
++		{
++			_filterTracker.MoveActiveToPendingAssignment(pageStartHeight, new FilterPage(pageStartHeight, filters));
++
++			Logger.LogTrace(
++				$"State after filter page completion - active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount}, next expected: {_filterTracker.LastHeight + 1}");
++
++			// Try to make the next page ready for consumption
++			TryMakeNextFilterPageReady();
++		}
++	}
++
++	public void OnFilterNodeDisconnected(PageAssignment assignedFilterPage)
++	{
++		lock (_lock)
++		{
++			_filterTracker.RemoveActiveAssignment(assignedFilterPage.StartHeight);
++		}
++
++		Logger.LogDebug($"Node disconnected, released filter page {assignedFilterPage.StartHeight} for reassignment");
++	}
++
++	public uint256? GetExpectedFilterHeader(uint height)
++	{
++		return _filterHeaderChain[height]?.BlockFilterHeader;
++	}
++
++	private void AcknowledgeFilterPageConsumed(uint pageEndHeight)
++	{
++		lock (_lock)
++		{
++			if (_readyFilterPage is null)
++			{
++				return;
++			}
++
++			_filterTracker.SetLastHeight(pageEndHeight);
++			_readyFilterPage = null;
++
++			// Reset the signal for the next page
++			_filterPageReadySignal = new TaskCompletionSource();
++
++			Logger.LogDebug($"Filter page consumed, now at height {_filterTracker.LastHeight}");
++
++			// Try to make the next page ready
++			TryMakeNextFilterPageReady();
++		}
++	}
++
++	private void TryMakeNextFilterPageReady()
++	{
++		// Don't make a new page ready if one is already waiting
++		if (_readyFilterPage is not null)
++		{
++			Logger.LogTrace(
++				$"TryMakeNextFilterPageReady - page {_readyFilterPage.StartHeight} already ready, not making new page ready");
++			return;
++		}
++
++		var nextExpectedStart = _filterTracker.LastHeight + 1;
++
++		if (!_filterTracker.TryRemovePendingPage(nextExpectedStart, out var pendingPage))
++		{
++			// Next page not available yet
++			if (_filterTracker.HasPendingPages)
++			{
++				var pendingHeights = string.Join(", ", _filterTracker.GetPendingPageHeights());
++				Logger.LogTrace(
++					$"Next expected filter page {nextExpectedStart} not available yet. Pending pages at heights: {pendingHeights}");
++			}
++			else
++			{
++				Logger.LogTrace($"Next expected filter page {nextExpectedStart} not available yet. No pending pages.");
++			}
++
++			return;
++		}
++
++		_readyFilterPage = pendingPage;
++
++		Logger.LogDebug(
++			$"Filter page {pendingPage.StartHeight} ready for consumption ({pendingPage.Filters.Length} filters)");
++
++		// Signal that a page is ready
++		_filterPageReadySignal.TrySetResult();
++	}
++}
++
++public record PageAssignment(uint StartHeight, uint StopHeight, uint256 StopHash)
++{
++	public uint Count => StopHeight - StartHeight + 1;
++}
++
++public abstract record Page(uint StartHeight);
++
++public record HeaderPage(uint StartHeight, SmartHeader[] Headers) : Page(StartHeight);
++
++public record FilterPage(uint StartHeight, FilterModel[] Filters) : Page(StartHeight);
+diff --git a/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs b/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+new file mode 100644
+index 0000000000..b695f40f53
+--- /dev/null
++++ b/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+@@ -0,0 +1,122 @@
++using System.Collections.Generic;
++using System.Diagnostics.CodeAnalysis;
++using System.Linq;
++
++namespace WalletWasabi.BitcoinP2p;
++
++/// <summary>
++/// Tracks page assignments for parallel filter synchronization.
++/// Manages active fetches, pending completed pages, and sequential page height progression.
++/// </summary>
++/// <typeparam name="TPage">The type of validated page (ValidatedHeaderPage or ValidatedFilterPage)</typeparam>
++public class PageAssignmentTracker<TPage>(uint initialHeight = 0, TimeProvider? timeProvider = null) where TPage : Page
++{
++	private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
++	private readonly SortedDictionary<uint, TPage> _pendingPages = [];
++	private readonly SortedDictionary<uint, DateTime> _activeAssignments = [];
++
++	/// <summary>
++	/// The last height that was processed/emitted.
++	/// </summary>
++	public uint LastHeight { get; private set; } = initialHeight;
++
++	/// <summary>
++	/// Number of pages currently being fetched.
++	/// </summary>
++	public int ActiveCount => _activeAssignments.Count;
++
++	/// <summary>
++	/// Number of completed pages awaiting processing.
++	/// </summary>
++	public int PendingCount => _pendingPages.Count;
++
++	/// <summary>
++	/// Marks a page as actively being fetched.
++	/// </summary>
++	public void AddActiveAssignment(uint startHeight)
++	{
++		_activeAssignments.Add(startHeight, _timeProvider.GetUtcNow().UtcDateTime);
++	}
++
++	/// <summary>
++	/// Removes an active assignment (on completion or node disconnect).
++	/// </summary>
++	public void RemoveActiveAssignment(uint startHeight)
++	{
++		_activeAssignments.Remove(startHeight);
++	}
++
++	public void MoveActiveToPendingAssignment(uint startHeight, TPage page)
++	{
++		// Remove from active assignments
++		RemoveActiveAssignment(startHeight);
++		_pendingPages[startHeight] = page;
++	}
++
++	/// <summary>
++	/// Attempts to remove and return a pending page at the specified height.
++	/// </summary>
++	public bool TryRemovePendingPage(uint startHeight, [NotNullWhen(true)] out TPage? page)
++	{
++		if (_pendingPages.Remove(startHeight, out var removedPage))
++		{
++			page = removedPage;
++			return true;
++		}
++		page = null;
++		return false;
++	}
++
++	/// <summary>
++	/// Gets all pending page heights (for logging).
++	/// </summary>
++	public IEnumerable<uint> GetPendingPageHeights()
++	{
++		return _pendingPages.Keys.OrderBy(k => k);
++	}
++
++	/// <summary>
++	/// Checks if there are any pending pages.
++	/// </summary>
++	public bool HasPendingPages => _pendingPages.Any();
++
++	/// <summary>
++	/// Updates the last processed/emitted height.
++	/// </summary>
++	public void SetLastHeight(uint height)
++	{
++		LastHeight = height;
++	}
++
++	/// <summary>
++	/// Calculates the next available page start height, skipping active and pending pages.
++	/// </summary>
++	/// <param name="pageSize">The size of each page (e.g., 1000)</param>
++	public uint GetNextPageStartHeight(uint pageSize)
++	{
++		var nextStart = LastHeight + 1;
++
++		// Skip over any pages that are already assigned or pending
++		while (_activeAssignments.ContainsKey(nextStart) || _pendingPages.ContainsKey(nextStart))
++		{
++			nextStart += pageSize;
++		}
++
++		return nextStart;
++	}
++
++	/// <summary>
++	/// Finds the oldest active assignment that is older than the specified timeout.
++	/// Returns null if no stale assignments found.
++	/// </summary>
++	public uint? GetOldestStaleAssignment(TimeSpan timeout)
++	{
++		var cutoffTime = _timeProvider.GetUtcNow().UtcDateTime - timeout;
++
++		return _activeAssignments
++			.Where(kvp => kvp.Value < cutoffTime)
++			.OrderBy(kvp => kvp.Value)
++			.Select(kvp => (uint?)kvp.Key)
++			.FirstOrDefault();
++	}
++}
+diff --git a/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs b/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
+index 9aa063e01d..e07fbbdbad 100644
+--- a/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
++++ b/WalletWasabi/Blockchain/Blocks/FilterHeaderChain.cs
+@@ -1,5 +1,6 @@
+ using NBitcoin;
+ using System.Collections.Generic;
++using System.Linq;
+ using System.Threading;
+ 
+ namespace WalletWasabi.Blockchain.Blocks;
+diff --git a/WalletWasabi/Helpers/Constants.cs b/WalletWasabi/Helpers/Constants.cs
+index 53d5473b99..301c76777e 100644
+--- a/WalletWasabi/Helpers/Constants.cs
++++ b/WalletWasabi/Helpers/Constants.cs
+@@ -106,7 +106,7 @@ public static class Constants
+ 
+ 	public static readonly NodeRequirement NodeRequirements = new()
+ 	{
+-		RequiredServices = NodeServices.NODE_WITNESS | NodeServices.NODE_COMPACT_FILTERS,
++		RequiredServices = NodeServices.NODE_WITNESS, //| NodeServices.NODE_COMPACT_FILTERS,
+ 		MinVersion = ProtocolVersionWitnessVersion,
+ 		MinProtocolCapabilities = new ProtocolCapabilities { SupportGetBlock = true, SupportWitness = true, SupportMempoolQuery = true }
+ 	};
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 455798e7f2..0787c8ab3a 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -1,4 +1,4 @@
+-using System.Diagnostics;
++using System.Collections.Generic;
+ using NBitcoin;
+ using NBitcoin.RPC;
+ using System.Linq;
+@@ -6,12 +6,10 @@ using System.Net.Http;
+ using System.Net.Sockets;
+ using System.Threading;
+ using System.Threading.Tasks;
+-using NBitcoin.Protocol;
+-using WabiSabi.Crypto.Randomness;
+ using WalletWasabi.Backend.Models;
++using WalletWasabi.BitcoinP2p;
+ using WalletWasabi.BitcoinRpc;
+ using WalletWasabi.Blockchain.Blocks;
+-using WalletWasabi.Extensions;
+ using WalletWasabi.Helpers;
+ using WalletWasabi.Logging;
+ using WalletWasabi.Stores;
+@@ -39,6 +37,9 @@ public static class FilterProviders
+ 	public static FilterProvider CreateBitcoinRpcFilterProvider(IRPCClient bitcoinClient, ConcurrentChain blockHeaderChain) =>
+ 		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinRpcAsync(bitcoinClient, blockHeaderChain, fromHash, fromHeight, cancellationToken);
+ 
++	public static FilterProvider CreateBitcoinP2pFilterProvider(FilterHeaderChain filterHeadersChain, ConcurrentChain blockHeadersChain, FilterSynchronizationState synchronizationState) =>
++		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinP2pAsync(filterHeadersChain, blockHeadersChain, synchronizationState, fromHeight, cancellationToken);
++
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinRpcAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+ 	{
+ 		try
+@@ -113,31 +114,76 @@ public static class FilterProviders
+ 		return blockHashes;
+ 	}
+ 
+-	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinP2pAsync(ConcurrentChain headersChain,
+-		NodesGroup nodes, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinP2pAsync(
++		FilterHeaderChain filterHeadersChain,
++		ConcurrentChain blockHeadersChain,
++		FilterSynchronizationState synchronizationState,
++		uint fromHeight,
++		CancellationToken cancellationToken)
+ 	{
+-		var currentHeight = headersChain.Tip.Height;
+-		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
+-		var stopAtHeight = fromHeight + nbOfFiltersToFetch;
+-		var stopAtHash = headersChain.GetBlock((int) stopAtHeight).HashBlock;
++		try
++		{
++			// Wait until the filter headers chain is synchronized ahead of our current position.
++			var filterHeadersTip = filterHeadersChain.Tip;
++			if (filterHeadersTip is null)
++			{
++				Logger.LogTrace("Filter headers tip is null, retrying in 1 second");
++				return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
++			}
++
++			if (filterHeadersTip.Height <= fromHeight)
++			{
++				// Filter headers not yet synced past our position; wait and retry.
++				Logger.LogTrace($"Filter headers not synced past current position (tip: {filterHeadersTip.Height}, current: {fromHeight}), retrying in 1 second");
++				return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
++			}
++
++			// Check if we're already caught up
++			if (filterHeadersTip.Height == fromHeight)
++			{
++				Logger.LogDebug("Already on best block");
++				return AlreadyOnBestBlock;
++			}
++
++			Logger.LogDebug($"Requesting filters from height {fromHeight + 1} (filter headers tip: {filterHeadersTip.Height})");
++
++			// Consume filters from the async stream (one page at a time)
++			var filters = new List<FilterModel>();
++			using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
++			using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
++
++			try
++			{
++				await foreach (var filter in synchronizationState.GetNextPageFiltersAsync(linkedCts.Token).ConfigureAwait(false))
++				{
++					filters.Add(filter);
++				}
+ 
+-		var node = nodes.ConnectedNodes.RandomElement(SecureRandom.Instance)!;
+-		var filters = await node.GetFiltersAsync(fromHeight, stopAtHash, cancellationToken).ConfigureAwait(false);
+-		Debug.Assert(filters.Length == nbOfFiltersToFetch);
++				if (filters.Count == 0)
++				{
++					Logger.LogWarning("Received 0 filters from P2P, retrying in 1 second");
++					return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
++				}
+ 
+-		var ret = new FilterModel[nbOfFiltersToFetch];
+-		var prevHeader = uint256.Zero;
+-		foreach (var (f, i) in filters.Select((f, i) => (f, i)))
++				Logger.LogDebug($"Successfully received {filters.Count} filters from P2P (heights {filters[0].Header.Height}-{filters[^1].Header.Height})");
++				return NewFiltersAvailable((uint)blockHeadersChain.Tip.Height, filters.ToArray());
++			}
++			catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
++			{
++				// Timeout - retry
++				Logger.LogWarning($"Timeout (90s) waiting for filters from P2P at height {fromHeight + 1}. Retrying in 1 second...");
++				return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
++			}
++		}
++		catch (OperationCanceledException)
+ 		{
+-			var grfilter = new GolombRiceFilter(f.FilterBytes);
+-			var grheader = grfilter.GetHeader(prevHeader);
+-			var header = new SmartHeader(f.BlockHash, grheader, (uint) (currentHeight + i), DateTimeOffset.UtcNow);
+-			var filter = new FilterModel(header, grfilter);
+-			prevHeader = grheader;
+-			ret[i] = filter;
++			throw;
++		}
++		catch (Exception e)
++		{
++			Logger.LogError($"Error waiting for filters from P2P: {e}. Retrying in 15 seconds...");
++			return FilterFetchingResult.Fail(TimeSpan.FromSeconds(15));
+ 		}
+-
+-		return NewFiltersAvailable((uint) currentHeight, ret);
+ 	}
+ }
+ 
+@@ -155,7 +201,12 @@ public static class Synchronizer
+ 			return Unit.Instance;
+ 		}
+ 
+-		var response = await filtersProvider(filterHeaderChain.TipHeight, filterHeaderChain.TipHash, cancellationToken)
++		if (filterStore.GetTip() is not { } storedTip)
++		{
++			return Unit.Instance;
++		}
++
++		var response = await filtersProvider(storedTip.Header.Height, storedTip.Header.BlockHash, cancellationToken)
+ 			.ConfigureAwait(false);
+ 
+ 		if (response.IsOk)
+@@ -192,7 +243,7 @@ public static class Synchronizer
+ 				Logger.LogInfo($"REORG Invalid Block: {reorgedFilter.Header.BlockHash}  Height {reorgedFilter.Header.Height}.");
+ 				break;
+ 			case FiltersResponse.NewFiltersAvailable newFiltersAvailable:
+-				var localTipHeight = filterHeaderChain.TipHeight;
++				var localTipHeight = filterStore.GetTip()?.Header.Height ?? 0;
+ 
+ 				filterHeaderChain.SetServerTipHeight(newFiltersAvailable.BestHeight);
+ 				eventBus.Publish(new NetworkTipHeightChanged(newFiltersAvailable.BestHeight));
+-- 
+2.53.0
+
+
+From c2360d371385db71e71914e33d302f4e21e24cf0 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Mon, 18 May 2026 11:41:30 -0300
+Subject: [PATCH 06/13] CR suggestions
+
+---
+ .../UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs   | 1 +
+ WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs            | 6 +++---
+ WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs            | 2 +-
+ WalletWasabi/Helpers/Constants.cs                           | 2 +-
+ 4 files changed, 6 insertions(+), 5 deletions(-)
+
+diff --git a/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs b/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
+index 5122668fc2..5e17428dfd 100644
+--- a/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
++++ b/WalletWasabi.Tests/UnitTests/Blockchain/Blocks/FilterHeaderChainTests.cs
+@@ -23,6 +23,7 @@ public class FilterHeaderChainTests
+ 		AssertEverythingDefault(chain);
+ 
+ 		SmartHeader header = CreateGenesisHeader();
++		// The header is known and it's silently ignored.
+ 		chain.AppendTip(header);
+ 
+ 		chain.AppendTip(header);
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index 114e9906c0..1d9142085f 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -704,7 +704,7 @@ public class FilterSynchronizationState
+ 				$"State after filter page completion - active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount}, next expected: {_filterTracker.LastHeight + 1}");
+ 
+ 			// Try to make the next page ready for consumption
+-			TryMakeNextFilterPageReady();
++			TryMakeNextFilterPageReadyNoLock();
+ 		}
+ 	}
+ 
+@@ -741,11 +741,11 @@ public class FilterSynchronizationState
+ 			Logger.LogDebug($"Filter page consumed, now at height {_filterTracker.LastHeight}");
+ 
+ 			// Try to make the next page ready
+-			TryMakeNextFilterPageReady();
++			TryMakeNextFilterPageReadyNoLock();
+ 		}
+ 	}
+ 
+-	private void TryMakeNextFilterPageReady()
++	private void TryMakeNextFilterPageReadyNoLock()
+ 	{
+ 		// Don't make a new page ready if one is already waiting
+ 		if (_readyFilterPage is not null)
+diff --git a/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs b/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+index b695f40f53..e645c7e8f9 100644
+--- a/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
++++ b/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+@@ -78,7 +78,7 @@ public class PageAssignmentTracker<TPage>(uint initialHeight = 0, TimeProvider?
+ 	/// <summary>
+ 	/// Checks if there are any pending pages.
+ 	/// </summary>
+-	public bool HasPendingPages => _pendingPages.Any();
++	public bool HasPendingPages => _pendingPages.Count > 0;
+ 
+ 	/// <summary>
+ 	/// Updates the last processed/emitted height.
+diff --git a/WalletWasabi/Helpers/Constants.cs b/WalletWasabi/Helpers/Constants.cs
+index 301c76777e..7dd643bafe 100644
+--- a/WalletWasabi/Helpers/Constants.cs
++++ b/WalletWasabi/Helpers/Constants.cs
+@@ -106,7 +106,7 @@ public static class Constants
+ 
+ 	public static readonly NodeRequirement NodeRequirements = new()
+ 	{
+-		RequiredServices = NodeServices.NODE_WITNESS, //| NodeServices.NODE_COMPACT_FILTERS,
++		RequiredServices = NodeServices.NODE_WITNESS,
+ 		MinVersion = ProtocolVersionWitnessVersion,
+ 		MinProtocolCapabilities = new ProtocolCapabilities { SupportGetBlock = true, SupportWitness = true, SupportMempoolQuery = true }
+ 	};
+-- 
+2.53.0
+
+
+From 833ed4d73a44bafd3cabbdb41539fcefb72ddcf9 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Tue, 19 May 2026 11:49:47 -0300
+Subject: [PATCH 07/13] Refactoring (move code and renames)
+
+---
+ WalletWasabi.Client/Global.cs                 |   9 -
+ .../BitcoinP2p/CompactFilterBehavior.cs       | 730 ++++++++++--------
+ .../BitcoinP2p/PageAssignmentTracker.cs       | 122 ---
+ WalletWasabi/Extensions/NBitcoinExtensions.cs |   6 +
+ WalletWasabi/Services/Synchronizer.cs         |   6 +-
+ WalletWasabi/Wallets/P2PNodesManager.cs       |  12 +-
+ 6 files changed, 422 insertions(+), 463 deletions(-)
+ delete mode 100644 WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+
+diff --git a/WalletWasabi.Client/Global.cs b/WalletWasabi.Client/Global.cs
+index 16f891d789..5ce4436ecb 100644
+--- a/WalletWasabi.Client/Global.cs
++++ b/WalletWasabi.Client/Global.cs
+@@ -376,15 +376,6 @@ public class Global
+ 		Spawn("Synchronizer", Service("Wasabi Index-Based Synchronizer", serviceLoop), cancellationToken)
+ 			.DisposeUsing(_disposables);
+ 
+-		EventBus.Subscribe<RpcStatusChanged>(e =>
+-		{
+-			var action = e.Status.Match(
+-				x => x.Synchronized ? resume : pause,
+-				_ => pause);
+-			action();
+-		}).DisposeUsing(_disposables);
+-
+-
+ 		EventBus.Subscribe<RpcStatusChanged>(e =>
+ 		{
+ 			if (e.Status.IsOk)
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index 1d9142085f..7f321c851a 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -1,14 +1,16 @@
+ using System.Collections.Generic;
+ using System.Diagnostics.CodeAnalysis;
++using System.Linq;
+ using System.Runtime.CompilerServices;
+ using System.Security.Cryptography;
+ using System.Threading;
+-using System.Threading.Tasks;
++using System.Threading.Channels;
+ using NBitcoin;
+ using NBitcoin.Protocol;
+ using NBitcoin.Protocol.Behaviors;
+ using WalletWasabi.Backend.Models;
+ using WalletWasabi.Blockchain.Blocks;
++using WalletWasabi.Extensions;
+ using WalletWasabi.Helpers;
+ using WalletWasabi.Logging;
+ using WalletWasabi.Services;
+@@ -16,7 +18,7 @@ using WalletWasabi.Services;
+ namespace WalletWasabi.BitcoinP2p;
+ 
+ public class CompactFilterBehavior(
+-	FilterSynchronizationState synchronizationState,
++	CompactFilterBehavior.FilterSynchronizationState synchronizationState,
+ 	ConcurrentChain blockHeaderChain,
+ 	EventBus eventBus)
+ 	: NodeBehavior
+@@ -25,12 +27,11 @@ public class CompactFilterBehavior(
+ 
+ 	private readonly List<CompactFilterPayload> _collectedFilters = [];
+ 
+-	private PageAssignment? _assignedHeaderPage;
+-	private PageAssignment? _assignedFilterPage;
++	private RangeRequest? _assignedHeaderRange;
++	private RangeRequest? _assignedFilterRange;
+ 
+ 	private volatile bool _invalidReceived;
+ 
+-
+ 	public CompactFilterBehavior(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders, ChainHeight tipHeight,
+ 		EventBus eventBus)
+ 		: this(new FilterSynchronizationState(blockHeaders, filterHeaders, tipHeight), blockHeaders, eventBus)
+@@ -69,7 +70,7 @@ public class CompactFilterBehavior(
+ 			return;
+ 		}
+ 
+-		if (node.PeerVersion?.Services.HasFlag(NodeServices.NODE_COMPACT_FILTERS) != true)
++		if (!node.SupportsCompactFilters)
+ 		{
+ 			Logger.LogDebug($"Node {node.Peer.Endpoint} does not support NODE_COMPACT_FILTERS, will not sync");
+ 			return;
+@@ -102,27 +103,27 @@ public class CompactFilterBehavior(
+ 			return;
+ 		}
+ 
+-		if (_assignedHeaderPage is {} headerPageAssignment &&
++		if (_assignedHeaderRange is { } assignedHeaderRange &&
+ 		    message.Message.Payload is CompactFilterHeadersPayload {FilterType: FilterType.Basic} cfHeaders)
+ 		{
+-			HandleFilterHeaderMessage(node, cfHeaders, headerPageAssignment);
++			HandleFilterHeaderMessage(node, cfHeaders, assignedHeaderRange);
+ 			return;
+ 		}
+ 
+-		if (_assignedFilterPage is {} filterPageAssignment &&
++		if (_assignedFilterRange is { } assignedFilterRange &&
+ 		    message.Message.Payload is CompactFilterPayload {FilterType: FilterType.Basic} filterPayload)
+ 		{
+-			HandleFilterMessage(node, filterPayload, filterPageAssignment);
++			HandleFilterMessage(node, filterPayload, assignedFilterRange);
+ 		}
+ 	}
+ 
+-	private void HandleFilterHeaderMessage(Node node, CompactFilterHeadersPayload cfHeaders, PageAssignment assignment)
++	private void HandleFilterHeaderMessage(Node node, CompactFilterHeadersPayload cfHeaders, RangeRequest assignment)
+ 	{
+ 		var filterHashes = cfHeaders.FilterHeaders;
+ 		var batchCount = filterHashes.Count;
+ 
+ 		Logger.LogDebug(
+-			$"Received {batchCount} filter headers from {node.Peer.Endpoint} for page {assignment.StartHeight}-{assignment.StopHeight}");
++			$"Received {batchCount} filter headers from {node.Peer.Endpoint} for range {assignment}");
+ 
+ 		if (batchCount == 0)
+ 		{
+@@ -165,33 +166,33 @@ public class CompactFilterBehavior(
+ 		if (validatedHeaders is null)
+ 		{
+ 			Logger.LogWarning(
+-				$"Validation failed for filter header page {assignment.StartHeight}-{assignment.StopHeight}");
++				$"Validation failed for filter header range {assignment}");
+ 			HandleInvalid(node, "Invalid compact filter headers received");
+ 			return;
+ 		}
+ 
+-		Logger.LogInfo($"Successfully validated filter header page {assignment.StartHeight}-{assignment.StopHeight}");
++		Logger.LogInfo($"Successfully validated filter header range {assignment}");
+ 
+ 		// Report success to shared state
+-		synchronizationState.OnHeaderPageCompleted(assignment.StartHeight, validatedHeaders);
+-		_assignedHeaderPage = null;
++		synchronizationState.OnHeaderCompleted(assignment.StartHeight, validatedHeaders);
++		_assignedHeaderRange = null;
+ 
+-		// Immediately try to fetch the next page
++		// Immediately try to fetch the next range
+ 		TrySync(node);
+ 	}
+ 
+-	private void HandleFilterMessage(Node node, CompactFilterPayload filterPayload, PageAssignment assignment)
++	private void HandleFilterMessage(Node node, CompactFilterPayload filterPayload, RangeRequest assignment)
+ 	{
+ 		_collectedFilters.Add(filterPayload);
+ 
+-		// Check if we've received all filters for this page
++		// Check if we've received all filters for this range
+ 		if (filterPayload.BlockHash != assignment.StopHash && _collectedFilters.Count < assignment.Count)
+ 		{
+ 			return;
+ 		}
+ 
+ 		Logger.LogDebug(
+-			$"Page {assignment.StartHeight}-{assignment.StopHeight} complete ({_collectedFilters.Count}/{assignment.Count} filters)");
++			$"Range {assignment} complete ({_collectedFilters.Count}/{assignment.Count} filters)");
+ 
+ 		var filters = _collectedFilters.ToArray();
+ 		_collectedFilters.Clear();
+@@ -202,18 +203,18 @@ public class CompactFilterBehavior(
+ 		if (validatedFilters is null)
+ 		{
+ 			// Validation failed - disconnect and release assignment
+-			Logger.LogWarning($"Validation failed for page {assignment.StartHeight}-{assignment.StopHeight}");
++			Logger.LogWarning($"Validation failed for range {assignment}");
+ 			HandleInvalid(node, "Invalid compact filters received");
+ 			return;
+ 		}
+ 
+-		Logger.LogInfo($"Successfully validated page {assignment.StartHeight}-{assignment.StopHeight}");
++		Logger.LogInfo($"Successfully validated range {assignment}");
+ 
+ 		// Report success
+-		synchronizationState.OnFilterPageCompleted(assignment.StartHeight, validatedFilters);
+-		_assignedFilterPage = null;
++		synchronizationState.OnFilterRangeCompleted(assignment.StartHeight, validatedFilters);
++		_assignedFilterRange = null;
+ 
+-		// Immediately try to fetch the next page
++		// Immediately try to fetch the next range
+ 		TrySync(node);
+ 	}
+ 
+@@ -310,19 +311,19 @@ public class CompactFilterBehavior(
+ 
+ 	private void TrySyncFilters(Node node)
+ 	{
+-		if (_assignedFilterPage is not null)
++		if (_assignedFilterRange is not null)
+ 		{
+ 			return;
+ 		}
+ 
+-		if (!synchronizationState.TryAssignFilterPage(out var filterAssignment))
++		if (!synchronizationState.TryAssignFilterRange(out var filterAssignment))
+ 		{
+ 			return;
+ 		}
+ 
+-		_assignedFilterPage = filterAssignment;
++		_assignedFilterRange = filterAssignment;
+ 		Logger.LogDebug(
+-			$"Assigned page {filterAssignment.StartHeight}-{filterAssignment.StopHeight} to node {node.Peer.Endpoint}");
++			$"Assigned range {filterAssignment} to node {node.Peer.Endpoint}");
+ 
+ 		_collectedFilters.Clear();
+ 
+@@ -333,18 +334,18 @@ public class CompactFilterBehavior(
+ 
+ 	private void TrySyncHeaders(Node node)
+ 	{
+-		if (_assignedHeaderPage is not null)
++		if (_assignedHeaderRange is not null)
+ 		{
+ 			return;
+ 		}
+ 
+-		if (!synchronizationState.TryAssignHeaderPage(out var headerAssignment))
++		if (!synchronizationState.TryAssignHeaderRange(out var headerAssignment))
+ 		{
+ 			return;
+ 		}
+ 
+-		_assignedHeaderPage = headerAssignment;
+-		Logger.LogDebug($"Assigned filter header page {headerAssignment.StartHeight}-{headerAssignment.StopHeight} to node {node.Peer.Endpoint}");
++		_assignedHeaderRange = headerAssignment;
++		Logger.LogDebug($"Assigned filter header range {headerAssignment} to node {node.Peer.Endpoint}");
+ 
+ 		var payload = new GetCompactFilterHeadersPayload(FilterType.Basic, headerAssignment.StartHeight,
+ 			headerAssignment.StopHash);
+@@ -365,16 +366,16 @@ public class CompactFilterBehavior(
+ 
+ 	private void ReleaseAssignments()
+ 	{
+-		if (_assignedHeaderPage is not null)
++		if (_assignedHeaderRange is not null)
+ 		{
+-			synchronizationState.OnHeaderNodeDisconnected(_assignedHeaderPage);
+-			_assignedHeaderPage = null;
++			synchronizationState.OnHeaderNodeDisconnected(_assignedHeaderRange);
++			_assignedHeaderRange = null;
+ 		}
+ 
+-		if (_assignedFilterPage is not null)
++		if (_assignedFilterRange is not null)
+ 		{
+-			synchronizationState.OnFilterNodeDisconnected(_assignedFilterPage);
+-			_assignedFilterPage = null;
++			synchronizationState.OnFilterNodeDisconnected(_assignedFilterRange);
++			_assignedFilterRange = null;
+ 		}
+ 
+ 		_collectedFilters.Clear();
+@@ -387,410 +388,485 @@ public class CompactFilterBehavior(
+ 			return false;
+ 		}
+ 
+-		if (node is not {State: NodeState.HandShaked})
++		return node is {State: NodeState.HandShaked};
++	}
++
++	public class FilterSynchronizationState
++	{
++		private static readonly TimeSpan HeaderAssignmentTimeout = TimeSpan.FromSeconds(25);
++		private static readonly TimeSpan FilterAssignmentTimeout = TimeSpan.FromSeconds(50);
++		private const int HeadersPerRequest = 1_100;
++		private const int FiltersPerRequest = 400;
++		private const int MaxLookaheadRanges = 25;
++
++		private readonly Lock _lock = new();
++		private readonly ConcurrentChain _blockHeaderChain;
++		private readonly FilterHeaderChain _filterHeaderChain;
++		private readonly TimeProvider _timeProvider;
++
++		private readonly RequestTracker<HeaderResponse> _headerTracker;
++		private readonly RequestTracker<FilterResponse> _filterTracker;
++
++		private readonly Channel<FilterResponse> _readyFiltersChannel;
++
++		public FilterSynchronizationState(ConcurrentChain blockHeaderChain, FilterHeaderChain filterHeaderChain,
++			TimeProvider? timeProvider = null)
+ 		{
+-			return false;
+-		}
++			_blockHeaderChain = blockHeaderChain;
++			_filterHeaderChain = filterHeaderChain;
++			_timeProvider = timeProvider ?? TimeProvider.System;
+ 
+-		return true;
+-	}
+-}
++			var initialHeaderHeight = _filterHeaderChain.Tip?.Height ?? 0;
++			_headerTracker = new RequestTracker<HeaderResponse>(initialHeaderHeight, _timeProvider);
++			_filterTracker = new RequestTracker<FilterResponse>(0, _timeProvider);
+ 
+-public class FilterSynchronizationState
+-{
+-	private static readonly TimeSpan HeaderAssignmentTimeout = TimeSpan.FromSeconds(30);
+-	private static readonly TimeSpan FilterAssignmentTimeout = TimeSpan.FromSeconds(60);
+-	private const int HeaderPageSize = 1_000;
+-	private const int FilterPageSize = 400;
++			_readyFiltersChannel = Channel.CreateUnbounded<FilterResponse>();
++		}
+ 
+-	private readonly Lock _lock = new();
+-	private readonly ConcurrentChain _blockHeaderChain;
+-	private readonly FilterHeaderChain _filterHeaderChain;
+-	private readonly TimeProvider _timeProvider;
++		public FilterSynchronizationState(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders,
++			ChainHeight tipHeight, TimeProvider? timeProvider = null)
++			: this(blockHeaders, filterHeaders, timeProvider)
++		{
++			_filterTracker = new RequestTracker<FilterResponse>(tipHeight, _timeProvider);
++		}
+ 
+-	private readonly PageAssignmentTracker<HeaderPage> _headerTracker;
+-	private readonly PageAssignmentTracker<FilterPage> _filterTracker;
++		internal bool TryAssignHeaderRange([NotNullWhen(true)] out RangeRequest? assignment)
++		{
++			assignment = null;
++			lock (_lock)
++			{
++				// Check for and release any stale header assignments
++				if (_headerTracker.GetOldestStaleAssignment(HeaderAssignmentTimeout) is { } staleHeaderHeight)
++				{
++					_headerTracker.RemoveActiveAssignment(staleHeaderHeight);
++					Logger.LogWarning(
++						$"Auto-released stale filter header assignment at height {staleHeaderHeight}");
++				}
+ 
++				var chainTip = _blockHeaderChain.Tip;
+ 
+-	// Currently assigned filter fetches: pageStartHeight -> in-progress
++				// Find the next range to assign (respecting max lookahead limit)
++				if (!_headerTracker.TryGetNextRangeStartHeight(HeadersPerRequest, MaxLookaheadRanges, out var nextRangeStart))
++				{
++					Logger.LogTrace(
++						$"Max lookahead limit reached for headers (active: {_headerTracker.ActiveCount}, pending: {_headerTracker.PendingCount})");
++					return false;
++				}
+ 
+-	// The filter page currently waiting to be consumed by the Synchronizer (null if none)
+-	private FilterPage? _readyFilterPage;
++				// Nothing to fetch if we're caught up
++				if (nextRangeStart > chainTip.Height)
++				{
++					return false;
++				}
+ 
+-	// Signal for when a new filter page becomes ready
+-	private TaskCompletionSource _filterPageReadySignal = new();
++				// Calculate stop height (limited by chain tip and the ma number of headers to request)
++				var stopHeight = (uint) Math.Min(nextRangeStart + HeadersPerRequest - 1, chainTip.Height);
+ 
+-	public FilterSynchronizationState(ConcurrentChain blockHeaderChain, FilterHeaderChain filterHeaderChain,
+-		TimeProvider? timeProvider = null)
+-	{
+-		_blockHeaderChain = blockHeaderChain;
+-		_filterHeaderChain = filterHeaderChain;
+-		_timeProvider = timeProvider ?? TimeProvider.System;
++				// Get the stop block hash
++				var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
+ 
+-		var initialHeaderHeight = _filterHeaderChain.Tip?.Height ?? 0;
+-		_headerTracker = new PageAssignmentTracker<HeaderPage>(initialHeaderHeight, _timeProvider);
+-		_filterTracker = new PageAssignmentTracker<FilterPage>(0, _timeProvider);
+-	}
++				// Don't assign this range if we don't have the previous filter header yet
++				if (!TryGetPreviousFilterHeader(nextRangeStart, out _))
++				{
++					return false;
++				}
+ 
+-	public FilterSynchronizationState(ConcurrentChain blockHeaders, FilterHeaderChain filterHeaders,
+-		ChainHeight tipHeight, TimeProvider? timeProvider = null)
+-		: this(blockHeaders, filterHeaders, timeProvider)
+-	{
+-		_filterTracker = new PageAssignmentTracker<FilterPage>(tipHeight, _timeProvider);
+-	}
++				// Track this assignment so other nodes don't get the same range
++				_headerTracker.AddActiveAssignment(nextRangeStart);
+ 
+-	#region Filter Header Methods
++				assignment = new RangeRequest(nextRangeStart, stopHeight, stopBlock.HashBlock);
++				return true;
++			}
++		}
+ 
+-	public bool TryAssignHeaderPage([NotNullWhen(true)] out PageAssignment? assignment)
+-	{
+-		assignment = null;
+-		lock (_lock)
++		public void OnHeaderCompleted(uint rangeStartHeight, SmartHeader[] headers)
+ 		{
+-			// Check for and release any stale header assignments
+-			if (_headerTracker.GetOldestStaleAssignment(HeaderAssignmentTimeout) is { } staleHeaderHeight)
++			lock (_lock)
+ 			{
+-				_headerTracker.RemoveActiveAssignment(staleHeaderHeight);
+-				Logger.LogWarning(
+-					$"Auto-released stale filter header assignment at height {staleHeaderHeight} (timeout: 60s)");
++				// Remove from active assignments
++				_headerTracker.MoveActiveToPendingAssignment(rangeStartHeight,
++					new HeaderResponse(rangeStartHeight, headers));
++
++				// Process any ranges that are now ready
++				ProcessPendingHeaderRanges();
+ 			}
++		}
+ 
+-			var chainTip = _blockHeaderChain.Tip;
++		internal void OnHeaderNodeDisconnected(RangeRequest assignment)
++		{
++			lock (_lock)
++			{
++				_headerTracker.RemoveActiveAssignment(assignment.StartHeight);
++			}
+ 
+-			// Find the next page to assign
+-			var nextPageStart = _headerTracker.GetNextPageStartHeight(HeaderPageSize);
++			Logger.LogDebug(
++				$"Node disconnected, released filter header range {assignment.StartHeight} for reassignment");
++		}
+ 
+-			// Nothing to fetch if we're caught up
+-			if (nextPageStart > chainTip.Height)
++		internal SmartHeader[]? ValidateFilterHeaders(
++			RangeRequest assignment,
++			uint256[] filterHashes,
++			uint256 declaredPreviousFilterHeader)
++		{
++			// Recalculate the expected previous filter header from the chain
++			if (!TryGetPreviousFilterHeader(assignment.StartHeight, out var expectedPreviousFilterHeader))
+ 			{
+-				return false;
++				Logger.LogWarning(
++					$"Cannot validate: previous filter header not available for range {assignment.StartHeight}");
++				return null;
+ 			}
+ 
+-			// Calculate stop height (limited by chain tip and page size)
+-			var stopHeight = (uint) Math.Min(nextPageStart + HeaderPageSize - 1, chainTip.Height);
+-
+-			// Get the stop block hash
+-			var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
++			// Validate against the expected previous filter header
++			if (declaredPreviousFilterHeader != expectedPreviousFilterHeader)
++			{
++				Logger.LogWarning(
++					$"Previous filter header mismatch for range {assignment.StartHeight} - expected {expectedPreviousFilterHeader}, received {declaredPreviousFilterHeader}");
++				return null;
++			}
+ 
+-			// Capture the expected previous filter header for this page
+-			var expectedPreviousFilterHeader = nextPageStart == 1
+-				? uint256.Zero
+-				: _filterHeaderChain[nextPageStart - 1]?.BlockFilterHeader;
++			var result = new SmartHeader[filterHashes.Length];
++			var prevFilterHeader = declaredPreviousFilterHeader;
+ 
+-			// Don't assign this page if we don't have the previous filter header yet
+-			if (expectedPreviousFilterHeader is null)
++			for (var i = 0; i < filterHashes.Length; i++)
+ 			{
+-				return false;
+-			}
++				var height = assignment.StartHeight + (uint) i;
++				var block = _blockHeaderChain.GetBlock((int) height);
++				if (block == null)
++				{
++					Logger.LogWarning($"Block header not found at height {height}, aborting batch validation");
++					return null;
++				}
+ 
+-			// Track this assignment so other nodes don't get the same page
+-			_headerTracker.AddActiveAssignment(nextPageStart);
++				var filterHash = filterHashes[i];
++				var filterHeader = ComputeFilterHeader(filterHash, prevFilterHeader);
+ 
+-			assignment = new PageAssignment(nextPageStart, stopHeight, stopBlock.HashBlock);
+-			return true;
+-		}
+-	}
++				result[i] = new SmartHeader(
++					block.HashBlock,
++					filterHeader,
++					height,
++					block.Header.BlockTime);
+ 
+-	public void OnHeaderPageCompleted(uint pageStartHeight, SmartHeader[] headers)
+-	{
+-		lock (_lock)
+-		{
+-			// Remove from active assignments
+-			_headerTracker.MoveActiveToPendingAssignment(pageStartHeight, new HeaderPage(pageStartHeight, headers));
++				prevFilterHeader = filterHeader;
++			}
+ 
+-			// Process any pages that are now ready
+-			ProcessPendingHeaderPages();
++			return result;
+ 		}
+-	}
+ 
+-	public void OnHeaderNodeDisconnected(PageAssignment assignedPage)
+-	{
+-		lock (_lock)
++		private void ProcessPendingHeaderRanges()
+ 		{
+-			_headerTracker.RemoveActiveAssignment(assignedPage.StartHeight);
+-		}
++			// Process ranges in order
++			while (true)
++			{
++				var nextExpectedStart = _headerTracker.LastHeight + 1;
+ 
+-		Logger.LogDebug($"Node disconnected, released filter header page {assignedPage.StartHeight} for reassignment");
+-	}
++				if (!_headerTracker.TryRemovePendingRange(nextExpectedStart, out var pendingRange))
++				{
++					// Next range not available yet
++					break;
++				}
+ 
+-	public SmartHeader[]? ValidateFilterHeaders(
+-		PageAssignment assignment,
+-		uint256[] filterHashes,
+-		uint256 declaredPreviousFilterHeader)
+-	{
+-		// Recalculate the expected previous filter header from the chain
+-		var expectedPreviousFilterHeader = assignment.StartHeight == 1
+-			? uint256.Zero
+-			: _filterHeaderChain[assignment.StartHeight - 1]?.BlockFilterHeader;
++				// Append all headers from this range
++				foreach (var header in pendingRange.Headers)
++				{
++					try
++					{
++						_filterHeaderChain.AppendTip(header);
++						_headerTracker.SetLastHeight(header.Height);
++					}
++					catch (InvalidOperationException ex)
++					{
++						Logger.LogError($"Failed to append filter header at height {header.Height}: {ex.Message}");
++						// Stop processing - this shouldn't happen since headers were pre-validated
++						return;
++					}
++				}
+ 
+-		if (expectedPreviousFilterHeader is null)
+-		{
+-			Logger.LogWarning($"Cannot validate: previous filter header not available for page {assignment.StartHeight}");
+-			return null;
++				Logger.LogInfo(
++					$"Successfully processed filter header range {pendingRange.StartHeight}, new tip at height {_headerTracker.LastHeight}");
++			}
+ 		}
+ 
+-		// Validate against the expected previous filter header
+-		if (declaredPreviousFilterHeader != expectedPreviousFilterHeader)
++		private static uint256 ComputeFilterHeader(uint256 filterHash, uint256 prevFilterHeader)
+ 		{
+-			Logger.LogWarning(
+-				$"Previous filter header mismatch for page {assignment.StartHeight} - expected {expectedPreviousFilterHeader}, received {declaredPreviousFilterHeader}");
+-			return null;
++			Span<byte> data = stackalloc byte[64];
++			filterHash.ToBytes(data[..32]);
++			prevFilterHeader.ToBytes(data[32..]);
++			Span<byte> hash = stackalloc byte[32];
++			SHA256.HashData(SHA256.HashData(data), hash);
++			return new uint256(hash);
+ 		}
+ 
+-		var result = new SmartHeader[filterHashes.Length];
+-		var prevFilterHeader = declaredPreviousFilterHeader;
+-
+-		for (var i = 0; i < filterHashes.Length; i++)
++		private bool TryGetPreviousFilterHeader(uint startHeight, [NotNullWhen(true)] out uint256? header)
+ 		{
+-			var height = assignment.StartHeight + (uint) i;
+-			var block = _blockHeaderChain.GetBlock((int) height);
+-			if (block == null)
+-			{
+-				Logger.LogWarning($"Block header not found at height {height}, aborting batch validation");
+-				return null;
+-			}
+-
+-			var filterHash = filterHashes[i];
+-			var filterHeader = ComputeFilterHeader(filterHash, prevFilterHeader);
+-
+-			result[i] = new SmartHeader(
+-				block.HashBlock,
+-				filterHeader,
+-				height,
+-				block.Header.BlockTime);
++			header = startHeight == 1
++				? uint256.Zero
++				: _filterHeaderChain[startHeight - 1]?.BlockFilterHeader;
+ 
+-			prevFilterHeader = filterHeader;
++			return header is not null;
+ 		}
+ 
+-		return result;
+-	}
+-
+-	private void ProcessPendingHeaderPages()
+-	{
+-		// Process pages in order
+-		while (true)
++		public async IAsyncEnumerable<FilterModel> GetNextRangeFiltersAsync(
++			[EnumeratorCancellation] CancellationToken cancellationToken)
+ 		{
+-			var nextExpectedStart = _headerTracker.LastHeight + 1;
++			// Read the next range from the channel
++			var filterResponse = await _readyFiltersChannel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
++
++			Logger.LogDebug(
++				$"Starting to yield {filterResponse.Filters.Length} filters from range {filterResponse.StartHeight}");
+ 
+-			if (!_headerTracker.TryRemovePendingPage(nextExpectedStart, out var pendingPage))
++			foreach (var filter in filterResponse.Filters)
+ 			{
+-				// Next page not available yet
+-				break;
++				cancellationToken.ThrowIfCancellationRequested();
++				yield return filter;
+ 			}
+ 
+-			// Append all headers from this page
+-			foreach (var header in pendingPage.Headers)
++			Logger.LogDebug(
++				$"Filter range {filterResponse.StartHeight} consumed ({filterResponse.Filters.Length} filters)");
++		}
++
++		internal bool TryAssignFilterRange([NotNullWhen(true)] out RangeRequest? assignment)
++		{
++			assignment = null;
++			lock (_lock)
+ 			{
+-				try
++				// Check for and release any stale filter assignments
++				if (_filterTracker.GetOldestStaleAssignment(FilterAssignmentTimeout) is { } staleFilterHeight)
+ 				{
+-					_filterHeaderChain.AppendTip(header);
+-					_headerTracker.SetLastHeight(header.Height);
++					_filterTracker.RemoveActiveAssignment(staleFilterHeight);
++					Logger.LogWarning($"Auto-released stale filter assignment at height {staleFilterHeight}");
+ 				}
+-				catch (InvalidOperationException ex)
++
++				// Check if filter headers are synced ahead
++				var filterHeadersTip = _filterHeaderChain.Tip!;
++
++				// Find the next range to assign (respecting max lookahead limit)
++				if (!_filterTracker.TryGetNextRangeStartHeight(FiltersPerRequest, MaxLookaheadRanges, out var nextRangeStart))
+ 				{
+-					Logger.LogError($"Failed to append filter header at height {header.Height}: {ex.Message}");
+-					// Stop processing - this shouldn't happen since headers were pre-validated
+-					return;
++					Logger.LogTrace(
++						$"Max lookahead limit reached (active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount})");
++					return false;
+ 				}
+-			}
+-
+-			Logger.LogInfo(
+-				$"Successfully processed filter header page {pendingPage.StartHeight}, new tip at height {_headerTracker.LastHeight}");
+-		}
+-	}
+ 
+-	private static uint256 ComputeFilterHeader(uint256 filterHash, uint256 prevFilterHeader)
+-	{
+-		Span<byte> data = stackalloc byte[64];
+-		filterHash.ToBytes(data[..32]);
+-		prevFilterHeader.ToBytes(data[32..]);
+-		Span<byte> hash = stackalloc byte[32];
+-		SHA256.HashData(SHA256.HashData(data), hash);
+-		return new uint256(hash);
+-	}
++				// Nothing to fetch if we're caught up with filter headers
++				if (nextRangeStart > filterHeadersTip.Height)
++				{
++					Logger.LogTrace(
++						$"caught up (next range start {nextRangeStart} > filter headers tip {filterHeadersTip.Height})");
++					return false;
++				}
+ 
+-	#endregion
++				// Calculate stop height (limited by filter headers tip and page size)
++				var stopHeight = Math.Min(nextRangeStart+ FiltersPerRequest - 1, filterHeadersTip.Height);
+ 
++				// Get the stop block hash
++				var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
+ 
+-	public async IAsyncEnumerable<FilterModel> GetNextPageFiltersAsync(
+-		[EnumeratorCancellation] CancellationToken cancellationToken)
+-	{
+-		var page = await WaitForReadyPageAsync(cancellationToken).ConfigureAwait(false);
++				// Track this assignment so other nodes don't get the same page
++				_filterTracker.AddActiveAssignment(nextRangeStart);
+ 
+-		Logger.LogDebug($"Starting to yield {page.Filters.Length} filters from page {page.StartHeight}");
++				Logger.LogDebug(
++					$"Assigned filter page {nextRangeStart}-{stopHeight} (active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount})");
+ 
+-		foreach (var filter in page.Filters)
+-		{
+-			cancellationToken.ThrowIfCancellationRequested();
+-			yield return filter;
++				assignment = new RangeRequest(nextRangeStart, stopHeight, stopBlock.HashBlock);
++				return true;
++			}
+ 		}
+ 
+-		var lastFilter = page.Filters[^1];
+-		AcknowledgeFilterPageConsumed(lastFilter.Header.Height);
+-	}
+-
+-	private async ValueTask<FilterPage> WaitForReadyPageAsync(CancellationToken cancellationToken)
+-	{
+-		while (true)
++		public void OnFilterRangeCompleted(uint rangeStartHeight, FilterModel[] filters)
+ 		{
+-			Task waitTask;
+-
+ 			lock (_lock)
+ 			{
+-				if (_readyFilterPage is { } page)
+-				{
+-					return page;
+-				}
++				_filterTracker.MoveActiveToPendingAssignment(rangeStartHeight,
++					new FilterResponse(rangeStartHeight, filters));
+ 
+-				waitTask = _filterPageReadySignal.Task;
++				Logger.LogTrace(
++					$"State after filter range completion - active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount}, next expected: {_filterTracker.LastHeight + 1}");
+ 
+-				Logger.LogTrace($"No page ready yet - pending pages: {_filterTracker.PendingCount}, active assignments: {_filterTracker.ActiveCount}");
++				// Try to make the next range ready for consumption
++				TryMakeNextFilterRangeReadyNoLock();
+ 			}
+-
+-			await waitTask.WaitAsync(cancellationToken).ConfigureAwait(false);
+ 		}
+-	}
+ 
+-	public bool TryAssignFilterPage([NotNullWhen(true)] out PageAssignment? assignment)
+-	{
+-		assignment = null;
+-		lock (_lock)
++		internal void OnFilterNodeDisconnected(RangeRequest assignment)
+ 		{
+-			// Check for and release any stale filter assignments (older than 60 seconds)
+-			if (_filterTracker.GetOldestStaleAssignment(FilterAssignmentTimeout) is { } staleFilterHeight)
++			lock (_lock)
+ 			{
+-				_filterTracker.RemoveActiveAssignment(staleFilterHeight);
+-				Logger.LogWarning(
+-					$"Auto-released stale filter assignment at height {staleFilterHeight} (timeout: 60s)");
++				_filterTracker.RemoveActiveAssignment(assignment.StartHeight);
+ 			}
+ 
+-			// Check if filter headers are synced ahead
+-			var filterHeadersTip = _filterHeaderChain.Tip!;
++			Logger.LogDebug($"Node disconnected, released filter range {assignment.StartHeight} for reassignment");
++		}
++
++		public uint256? GetExpectedFilterHeader(uint height)
++		{
++			return _filterHeaderChain[height]?.BlockFilterHeader;
++		}
+ 
+-			// Find the next page to assign
+-			var nextPageStart = _filterTracker.GetNextPageStartHeight(FilterPageSize);
++		private void TryMakeNextFilterRangeReadyNoLock()
++		{
++			var lastQueuedHeight = _filterTracker.LastHeight;
+ 
+-			// Nothing to fetch if we're caught up with filter headers
+-			if (nextPageStart > filterHeadersTip.Height)
++			while (true)
+ 			{
+-				Logger.LogTrace(
+-					$"TryAssignFilterPage - caught up (next page start {nextPageStart} > filter headers tip {filterHeadersTip.Height})");
+-				return false;
+-			}
++				var nextExpectedStart = lastQueuedHeight + 1;
+ 
+-			// Calculate stop height (limited by filter headers tip and page size)
+-			var stopHeight = Math.Min(nextPageStart + FilterPageSize - 1, filterHeadersTip.Height);
++				if (!_filterTracker.TryRemovePendingRange(nextExpectedStart, out var pendingRange))
++				{
++					// Next page not available yet
++					if (_filterTracker.HasPendingRanges)
++					{
++						var pendingHeights = string.Join(", ", _filterTracker.GetPendingHeights());
++						Logger.LogTrace(
++							$"Next expected filter range {nextExpectedStart} not available yet. Pending ranges at heights: {pendingHeights}");
++					}
++					else
++					{
++						Logger.LogTrace(
++							$"Next expected filter range {nextExpectedStart} not available yet. No pending ranges.");
++					}
+ 
+-			// Get the stop block hash
+-			var stopBlock = _blockHeaderChain.GetBlock((int) stopHeight);
++					return;
++				}
+ 
+-			// Track this assignment so other nodes don't get the same page
+-			_filterTracker.AddActiveAssignment(nextPageStart);
++				// Write to channel (always succeeds with unbounded channel)
++				_readyFiltersChannel.Writer.TryWrite(pendingRange);
+ 
+-			Logger.LogDebug(
+-				$"Assigned filter page {nextPageStart}-{stopHeight} (active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount})");
++				lastQueuedHeight = pendingRange.Filters[^1].Header.Height;
++				_filterTracker.SetLastHeight(lastQueuedHeight);
+ 
+-			assignment = new PageAssignment(nextPageStart, stopHeight, stopBlock.HashBlock);
+-			return true;
++				Logger.LogDebug(
++					$"Filter range {pendingRange.StartHeight} queued for consumption ({pendingRange.Filters.Length} filters)");
++			}
+ 		}
+ 	}
+ 
+-	public void OnFilterPageCompleted(uint pageStartHeight, FilterModel[] filters)
++	class RequestTracker<TProcessedResponse>(uint initialHeight = 0, TimeProvider? timeProvider = null) where TProcessedResponse : Response
+ 	{
+-		lock (_lock)
+-		{
+-			_filterTracker.MoveActiveToPendingAssignment(pageStartHeight, new FilterPage(pageStartHeight, filters));
++		private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
++		private readonly SortedDictionary<uint, TProcessedResponse> _pendingResponses = [];
++		private readonly SortedDictionary<uint, DateTime> _activeAssignments = [];
+ 
+-			Logger.LogTrace(
+-				$"State after filter page completion - active: {_filterTracker.ActiveCount}, pending: {_filterTracker.PendingCount}, next expected: {_filterTracker.LastHeight + 1}");
++		/// <summary>
++		/// The last height that was processed/emitted.
++		/// </summary>
++		public uint LastHeight { get; private set; } = initialHeight;
+ 
+-			// Try to make the next page ready for consumption
+-			TryMakeNextFilterPageReadyNoLock();
+-		}
+-	}
++		/// <summary>
++		/// Number of pages currently being fetched.
++		/// </summary>
++		public int ActiveCount => _activeAssignments.Count;
+ 
+-	public void OnFilterNodeDisconnected(PageAssignment assignedFilterPage)
+-	{
+-		lock (_lock)
++		/// <summary>
++		/// Number of completed pages awaiting processing.
++		/// </summary>
++		public int PendingCount => _pendingResponses.Count;
++
++		/// <summary>
++		/// Marks a page as actively being fetched.
++		/// </summary>
++		public void AddActiveAssignment(uint startHeight)
+ 		{
+-			_filterTracker.RemoveActiveAssignment(assignedFilterPage.StartHeight);
++			_activeAssignments.Add(startHeight, _timeProvider.GetUtcNow().UtcDateTime);
+ 		}
+ 
+-		Logger.LogDebug($"Node disconnected, released filter page {assignedFilterPage.StartHeight} for reassignment");
+-	}
++		/// <summary>
++		/// Removes an active assignment (on completion or node disconnect).
++		/// </summary>
++		public void RemoveActiveAssignment(uint startHeight)
++		{
++			_activeAssignments.Remove(startHeight);
++		}
+ 
+-	public uint256? GetExpectedFilterHeader(uint height)
+-	{
+-		return _filterHeaderChain[height]?.BlockFilterHeader;
+-	}
++		public void MoveActiveToPendingAssignment(uint startHeight, TProcessedResponse range)
++		{
++			// Remove from active assignments
++			RemoveActiveAssignment(startHeight);
++			_pendingResponses[startHeight] = range;
++		}
+ 
+-	private void AcknowledgeFilterPageConsumed(uint pageEndHeight)
+-	{
+-		lock (_lock)
++		/// <summary>
++		/// Attempts to remove and return a pending range at the specified height.
++		/// </summary>
++		public bool TryRemovePendingRange(uint startHeight, [NotNullWhen(true)] out TProcessedResponse? range)
+ 		{
+-			if (_readyFilterPage is null)
++			if (_pendingResponses.Remove(startHeight, out var removedResponse))
+ 			{
+-				return;
++				range = removedResponse;
++				return true;
+ 			}
+ 
+-			_filterTracker.SetLastHeight(pageEndHeight);
+-			_readyFilterPage = null;
+-
+-			// Reset the signal for the next page
+-			_filterPageReadySignal = new TaskCompletionSource();
+-
+-			Logger.LogDebug($"Filter page consumed, now at height {_filterTracker.LastHeight}");
+-
+-			// Try to make the next page ready
+-			TryMakeNextFilterPageReadyNoLock();
++			range = null;
++			return false;
+ 		}
+-	}
+ 
+-	private void TryMakeNextFilterPageReadyNoLock()
+-	{
+-		// Don't make a new page ready if one is already waiting
+-		if (_readyFilterPage is not null)
++		/// <summary>
++		/// Gets all pending range heights (for logging).
++		/// </summary>
++		public IEnumerable<uint> GetPendingHeights()
+ 		{
+-			Logger.LogTrace(
+-				$"TryMakeNextFilterPageReady - page {_readyFilterPage.StartHeight} already ready, not making new page ready");
+-			return;
++			return _pendingResponses.Keys.OrderBy(k => k);
+ 		}
+ 
+-		var nextExpectedStart = _filterTracker.LastHeight + 1;
++		/// <summary>
++		/// Checks if there are any pending pages.
++		/// </summary>
++		public bool HasPendingRanges => _pendingResponses.Count > 0;
++
++		/// <summary>
++		/// Updates the last processed/emitted height.
++		/// </summary>
++		public void SetLastHeight(uint height)
++		{
++			LastHeight = height;
++		}
+ 
+-		if (!_filterTracker.TryRemovePendingPage(nextExpectedStart, out var pendingPage))
++		public bool TryGetNextRangeStartHeight(uint rangeSize, int maxLookaheadRanges, [NotNullWhen(true)] out uint startHeight)
+ 		{
+-			// Next page not available yet
+-			if (_filterTracker.HasPendingPages)
++			var nextStart = LastHeight + 1;
++
++			// Skip over any pages that are already assigned or pending
++			while (_activeAssignments.ContainsKey(nextStart) || _pendingResponses.ContainsKey(nextStart))
+ 			{
+-				var pendingHeights = string.Join(", ", _filterTracker.GetPendingPageHeights());
+-				Logger.LogTrace(
+-					$"Next expected filter page {nextExpectedStart} not available yet. Pending pages at heights: {pendingHeights}");
++				nextStart += rangeSize;
+ 			}
+-			else
++
++			// Check if we would exceed the maximum lookahead limit
++			var lookaheadRanges = (nextStart - LastHeight - 1) / rangeSize;
++			if (lookaheadRanges >= maxLookaheadRanges)
+ 			{
+-				Logger.LogTrace($"Next expected filter page {nextExpectedStart} not available yet. No pending pages.");
++				startHeight = 0u;
++				return false;
+ 			}
+ 
+-			return;
++			startHeight = nextStart;
++			return true;
+ 		}
+ 
+-		_readyFilterPage = pendingPage;
+-
+-		Logger.LogDebug(
+-			$"Filter page {pendingPage.StartHeight} ready for consumption ({pendingPage.Filters.Length} filters)");
++		/// <summary>
++		/// Finds the oldest active assignment that is older than the specified timeout.
++		/// Returns null if no stale assignments found.
++		/// </summary>
++		public uint? GetOldestStaleAssignment(TimeSpan timeout)
++		{
++			var cutoffTime = _timeProvider.GetUtcNow().UtcDateTime - timeout;
+ 
+-		// Signal that a page is ready
+-		_filterPageReadySignal.TrySetResult();
++			return _activeAssignments
++				.Where(kvp => kvp.Value < cutoffTime)
++				.OrderBy(kvp => kvp.Value)
++				.Select(kvp => (uint?) kvp.Key)
++				.FirstOrDefault();
++		}
+ 	}
+-}
+ 
+-public record PageAssignment(uint StartHeight, uint StopHeight, uint256 StopHash)
+-{
+-	public uint Count => StopHeight - StartHeight + 1;
+-}
++	internal record RangeRequest(uint StartHeight, uint StopHeight, uint256 StopHash)
++	{
++		public uint Count => StopHeight - StartHeight + 1;
++		public override string ToString() => $"{StartHeight}-{StopHeight}";
++	}
+ 
+-public abstract record Page(uint StartHeight);
++	private abstract record Response(uint StartHeight);
+ 
+-public record HeaderPage(uint StartHeight, SmartHeader[] Headers) : Page(StartHeight);
++	private record HeaderResponse(uint StartHeight, SmartHeader[] Headers) : Response(StartHeight);
+ 
+-public record FilterPage(uint StartHeight, FilterModel[] Filters) : Page(StartHeight);
++	private record FilterResponse(uint StartHeight, FilterModel[] Filters) : Response(StartHeight);
++}
+diff --git a/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs b/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
+deleted file mode 100644
+index e645c7e8f9..0000000000
+--- a/WalletWasabi/BitcoinP2p/PageAssignmentTracker.cs
++++ /dev/null
+@@ -1,122 +0,0 @@
+-using System.Collections.Generic;
+-using System.Diagnostics.CodeAnalysis;
+-using System.Linq;
+-
+-namespace WalletWasabi.BitcoinP2p;
+-
+-/// <summary>
+-/// Tracks page assignments for parallel filter synchronization.
+-/// Manages active fetches, pending completed pages, and sequential page height progression.
+-/// </summary>
+-/// <typeparam name="TPage">The type of validated page (ValidatedHeaderPage or ValidatedFilterPage)</typeparam>
+-public class PageAssignmentTracker<TPage>(uint initialHeight = 0, TimeProvider? timeProvider = null) where TPage : Page
+-{
+-	private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
+-	private readonly SortedDictionary<uint, TPage> _pendingPages = [];
+-	private readonly SortedDictionary<uint, DateTime> _activeAssignments = [];
+-
+-	/// <summary>
+-	/// The last height that was processed/emitted.
+-	/// </summary>
+-	public uint LastHeight { get; private set; } = initialHeight;
+-
+-	/// <summary>
+-	/// Number of pages currently being fetched.
+-	/// </summary>
+-	public int ActiveCount => _activeAssignments.Count;
+-
+-	/// <summary>
+-	/// Number of completed pages awaiting processing.
+-	/// </summary>
+-	public int PendingCount => _pendingPages.Count;
+-
+-	/// <summary>
+-	/// Marks a page as actively being fetched.
+-	/// </summary>
+-	public void AddActiveAssignment(uint startHeight)
+-	{
+-		_activeAssignments.Add(startHeight, _timeProvider.GetUtcNow().UtcDateTime);
+-	}
+-
+-	/// <summary>
+-	/// Removes an active assignment (on completion or node disconnect).
+-	/// </summary>
+-	public void RemoveActiveAssignment(uint startHeight)
+-	{
+-		_activeAssignments.Remove(startHeight);
+-	}
+-
+-	public void MoveActiveToPendingAssignment(uint startHeight, TPage page)
+-	{
+-		// Remove from active assignments
+-		RemoveActiveAssignment(startHeight);
+-		_pendingPages[startHeight] = page;
+-	}
+-
+-	/// <summary>
+-	/// Attempts to remove and return a pending page at the specified height.
+-	/// </summary>
+-	public bool TryRemovePendingPage(uint startHeight, [NotNullWhen(true)] out TPage? page)
+-	{
+-		if (_pendingPages.Remove(startHeight, out var removedPage))
+-		{
+-			page = removedPage;
+-			return true;
+-		}
+-		page = null;
+-		return false;
+-	}
+-
+-	/// <summary>
+-	/// Gets all pending page heights (for logging).
+-	/// </summary>
+-	public IEnumerable<uint> GetPendingPageHeights()
+-	{
+-		return _pendingPages.Keys.OrderBy(k => k);
+-	}
+-
+-	/// <summary>
+-	/// Checks if there are any pending pages.
+-	/// </summary>
+-	public bool HasPendingPages => _pendingPages.Count > 0;
+-
+-	/// <summary>
+-	/// Updates the last processed/emitted height.
+-	/// </summary>
+-	public void SetLastHeight(uint height)
+-	{
+-		LastHeight = height;
+-	}
+-
+-	/// <summary>
+-	/// Calculates the next available page start height, skipping active and pending pages.
+-	/// </summary>
+-	/// <param name="pageSize">The size of each page (e.g., 1000)</param>
+-	public uint GetNextPageStartHeight(uint pageSize)
+-	{
+-		var nextStart = LastHeight + 1;
+-
+-		// Skip over any pages that are already assigned or pending
+-		while (_activeAssignments.ContainsKey(nextStart) || _pendingPages.ContainsKey(nextStart))
+-		{
+-			nextStart += pageSize;
+-		}
+-
+-		return nextStart;
+-	}
+-
+-	/// <summary>
+-	/// Finds the oldest active assignment that is older than the specified timeout.
+-	/// Returns null if no stale assignments found.
+-	/// </summary>
+-	public uint? GetOldestStaleAssignment(TimeSpan timeout)
+-	{
+-		var cutoffTime = _timeProvider.GetUtcNow().UtcDateTime - timeout;
+-
+-		return _activeAssignments
+-			.Where(kvp => kvp.Value < cutoffTime)
+-			.OrderBy(kvp => kvp.Value)
+-			.Select(kvp => (uint?)kvp.Key)
+-			.FirstOrDefault();
+-	}
+-}
+diff --git a/WalletWasabi/Extensions/NBitcoinExtensions.cs b/WalletWasabi/Extensions/NBitcoinExtensions.cs
+index ac5f716bc4..2977f7c5d5 100644
+--- a/WalletWasabi/Extensions/NBitcoinExtensions.cs
++++ b/WalletWasabi/Extensions/NBitcoinExtensions.cs
+@@ -452,4 +452,10 @@ public static class NBitcoinExtensions
+ 		var ceilFee = (long)Math.Ceiling(feeRate.SatoshiPerByte * virtualSize);
+ 		return Money.Satoshis(ceilFee);
+ 	}
++
++	extension(Node node)
++	{
++		public bool SupportsCompactFilters =>
++			node.PeerVersion?.Services.HasFlag(NodeServices.NODE_COMPACT_FILTERS) == true;
++	}
+ }
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 0787c8ab3a..ff1f1feb13 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -37,7 +37,7 @@ public static class FilterProviders
+ 	public static FilterProvider CreateBitcoinRpcFilterProvider(IRPCClient bitcoinClient, ConcurrentChain blockHeaderChain) =>
+ 		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinRpcAsync(bitcoinClient, blockHeaderChain, fromHash, fromHeight, cancellationToken);
+ 
+-	public static FilterProvider CreateBitcoinP2pFilterProvider(FilterHeaderChain filterHeadersChain, ConcurrentChain blockHeadersChain, FilterSynchronizationState synchronizationState) =>
++	public static FilterProvider CreateBitcoinP2pFilterProvider(FilterHeaderChain filterHeadersChain, ConcurrentChain blockHeadersChain, CompactFilterBehavior.FilterSynchronizationState synchronizationState) =>
+ 		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinP2pAsync(filterHeadersChain, blockHeadersChain, synchronizationState, fromHeight, cancellationToken);
+ 
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinRpcAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+@@ -117,7 +117,7 @@ public static class FilterProviders
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinP2pAsync(
+ 		FilterHeaderChain filterHeadersChain,
+ 		ConcurrentChain blockHeadersChain,
+-		FilterSynchronizationState synchronizationState,
++		CompactFilterBehavior.FilterSynchronizationState synchronizationState,
+ 		uint fromHeight,
+ 		CancellationToken cancellationToken)
+ 	{
+@@ -154,7 +154,7 @@ public static class FilterProviders
+ 
+ 			try
+ 			{
+-				await foreach (var filter in synchronizationState.GetNextPageFiltersAsync(linkedCts.Token).ConfigureAwait(false))
++				await foreach (var filter in synchronizationState.GetNextRangeFiltersAsync(linkedCts.Token).ConfigureAwait(false))
+ 				{
+ 					filters.Add(filter);
+ 				}
+diff --git a/WalletWasabi/Wallets/P2PNodesManager.cs b/WalletWasabi/Wallets/P2PNodesManager.cs
+index 0908638630..1afc8632e0 100644
+--- a/WalletWasabi/Wallets/P2PNodesManager.cs
++++ b/WalletWasabi/Wallets/P2PNodesManager.cs
+@@ -48,10 +48,18 @@ public class P2PNodesManager
+ 
+ 	public void DisconnectNodeIfEnoughPeers(Node node, string reason)
+ 	{
+-		if (_nodes.ConnectedNodes.Count > 5)
++		// Always keep at least 5 nodes connected
++		if (_nodes.ConnectedNodes.Count <= 5)
+ 		{
+-			DisconnectNode(node, reason);
++			return;
+ 		}
++
++		if (node.SupportsCompactFilters)
++		{
++			return;
++		}
++
++		DisconnectNode(node, reason);
+ 	}
+ 
+ 	public void DisconnectNode(Node node, string reason)
+-- 
+2.53.0
+
+
+From d91e6b4c9856eb45054582c5ab5ee66d2952d962 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Wed, 20 May 2026 16:56:34 -0300
+Subject: [PATCH 08/13] reorg
+
+---
+ .../BitcoinP2p/CompactFilterBehavior.cs       | 72 +++++++++++++++++++
+ WalletWasabi/Services/Synchronizer.cs         | 10 ++-
+ 2 files changed, 80 insertions(+), 2 deletions(-)
+
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index 7f321c851a..caebc69e19 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -702,6 +702,70 @@ public class CompactFilterBehavior(
+ 			return _filterHeaderChain[height]?.BlockFilterHeader;
+ 		}
+ 
++		public bool IsReorg(uint fromHeight, uint256 fromHash)
++		{
++			lock (_lock)
++			{
++				var filterTip = _filterHeaderChain.Tip;
++				if (filterTip is null)
++				{
++					return false;
++				}
++
++				var anchorBlock = _blockHeaderChain.GetBlock((int)fromHeight);
++				if (anchorBlock is null || anchorBlock.HashBlock != fromHash)
++				{
++					return MarkReorg($"Block {fromHash} at height {fromHeight} not found or mismatched in block header chain. Reorg detected.");
++				}
++
++				var start = filterTip.Height;
++				var endInclusive = Math.Max(0, start - 100 + 1);
++
++				// Compare filter headers against block headers from tip backwards.
++				for (long height = start; height >= endInclusive; height--)
++				{
++					var h = (uint)height;
++
++					var filterHeader = _filterHeaderChain[h];
++					if (filterHeader is null)
++					{
++						return MarkReorg($"Missing filter header at height {h}. Reorg detected.");
++					}
++
++					var block = _blockHeaderChain.GetBlock((int)h);
++					if (block is null)
++					{
++						return MarkReorg($"Missing block header at height {h}. Reorg detected.");
++					}
++
++					if (filterHeader.BlockHash != block.HashBlock)
++					{
++						return MarkReorg($"Hash mismatch at height {h}. Filter={filterHeader.BlockHash}, Block={block.HashBlock}. Reorg detected.");
++					}
++				}
++
++				return false;
++
++				bool MarkReorg(string message)
++				{
++					Logger.LogInfo(message);
++					ClearPendingStateNoLock();
++					return true;
++				}
++			}
++		}
++
++		private void ClearPendingStateNoLock()
++		{
++			// Clear all pending header ranges
++			_headerTracker.ClearAllPending();
++
++			// Clear all pending filter ranges
++			_filterTracker.ClearAllPending();
++
++			Logger.LogDebug("Cleared all pending filter header and filter assignments due to reorg");
++		}
++
+ 		private void TryMakeNextFilterRangeReadyNoLock()
+ 		{
+ 			var lastQueuedHeight = _filterTracker.LastHeight;
+@@ -856,6 +920,14 @@ public class CompactFilterBehavior(
+ 				.Select(kvp => (uint?) kvp.Key)
+ 				.FirstOrDefault();
+ 		}
++
++		/// <summary>
++		/// Clears all pending assignments. Used when a reorg is detected.
++		/// </summary>
++		public void ClearAllPending()
++		{
++			_pendingResponses.Clear();
++		}
+ 	}
+ 
+ 	internal record RangeRequest(uint StartHeight, uint StopHeight, uint256 StopHash)
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index ff1f1feb13..e3511cfc1b 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -38,7 +38,7 @@ public static class FilterProviders
+ 		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinRpcAsync(bitcoinClient, blockHeaderChain, fromHash, fromHeight, cancellationToken);
+ 
+ 	public static FilterProvider CreateBitcoinP2pFilterProvider(FilterHeaderChain filterHeadersChain, ConcurrentChain blockHeadersChain, CompactFilterBehavior.FilterSynchronizationState synchronizationState) =>
+-		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinP2pAsync(filterHeadersChain, blockHeadersChain, synchronizationState, fromHeight, cancellationToken);
++		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinP2pAsync(filterHeadersChain, blockHeadersChain, synchronizationState, fromHeight, fromHash, cancellationToken);
+ 
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinRpcAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+ 	{
+@@ -119,11 +119,11 @@ public static class FilterProviders
+ 		ConcurrentChain blockHeadersChain,
+ 		CompactFilterBehavior.FilterSynchronizationState synchronizationState,
+ 		uint fromHeight,
++		uint256 fromHash,
+ 		CancellationToken cancellationToken)
+ 	{
+ 		try
+ 		{
+-			// Wait until the filter headers chain is synchronized ahead of our current position.
+ 			var filterHeadersTip = filterHeadersChain.Tip;
+ 			if (filterHeadersTip is null)
+ 			{
+@@ -138,6 +138,12 @@ public static class FilterProviders
+ 				return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
+ 			}
+ 
++			// Check if a reorg has occurred - filter headers don't match current block chain
++			if (synchronizationState.IsReorg(fromHeight, fromHash))
++			{
++				return BestBlockUnknown;
++			}
++
+ 			// Check if we're already caught up
+ 			if (filterHeadersTip.Height == fromHeight)
+ 			{
+-- 
+2.53.0
+
+
+From 4247b689b0d981e1fd8d15960d5f7a38f9d5b2b0 Mon Sep 17 00:00:00 2001
+From: Lucas Ontivero <lucasontivero@gmail.com>
+Date: Wed, 20 May 2026 21:15:53 -0300
+Subject: [PATCH 09/13] Add some node seeds
+
+---
+ WalletWasabi.Client/Global.cs | 67 +++++++++++++++++++++++++++++------
+ 1 file changed, 57 insertions(+), 10 deletions(-)
+
+diff --git a/WalletWasabi.Client/Global.cs b/WalletWasabi.Client/Global.cs
+index 5ce4436ecb..0667e6b40d 100644
+--- a/WalletWasabi.Client/Global.cs
++++ b/WalletWasabi.Client/Global.cs
+@@ -159,15 +159,7 @@ public class Global
+ 
+ 	private NodesGroup ConfigureNodesGroup(MempoolService mempoolService)
+ 	{
+-		// NBitcoin doesn't have these dnsSeeds for signet
+-		if (Network == Bitcoin.Instance.Signet)
+-		{
+-			if (Network.DNSSeeds is List<DNSSeedData> dnsSeeds)
+-			{
+-				dnsSeeds.Add(new DNSSeedData("sprovoost.nl", "seed.signet.bitcoin.sprovoost.nl"));
+-				dnsSeeds.Add(new DNSSeedData("achownodes.xyz", "seed.signet.achownodes.xyz"));
+-			}
+-		}
++		AddSeedNodes();
+ 
+ 		var p2PDataDir = GetBitcoinP2pNetworkDirectory();
+ 		var chainBehavior = new BlockHeadersChainBehavior(_blockHeaders, FilterHeaders, EventBus);
+@@ -182,6 +174,61 @@ public class Global
+ 				Config.BlockOnlyMode ? [] : [chainBehavior, p2PBehavior]);
+ 
+ 		return nodesGroup;
++
++		void AddSeedNodes()
++		{
++			// NBitcoin doesn't have these dnsSeeds for signet
++			if (Network == Bitcoin.Instance.Signet)
++			{
++				if (Network.DNSSeeds is List<DNSSeedData> dnsSeeds)
++				{
++					dnsSeeds.Add(new DNSSeedData("sprovoost.nl", "seed.signet.bitcoin.sprovoost.nl"));
++					dnsSeeds.Add(new DNSSeedData("achownodes.xyz", "seed.signet.achownodes.xyz"));
++				}
++			}
++			else if (Network == Network.Main)
++			{
++				if (Network.SeedNodes is List<NetworkAddress> seedNodes)
++				{
++					string[] nodes =
++					[
++						"[::ffff:89.58.60.208]:8333", "141.8.29.139:8333", "176.126.73.74:8333", "51.37.212.201:8333",
++						"[::ffff:109.224.84.149]:8333", "[::ffff:123.202.192.214]:8333", "[::ffff:130.180.58.210]:8333",
++						"[::ffff:144.2.65.179]:8333", "[::ffff:158.174.102.68]:8333", "[::ffff:158.248.16.134]:8333",
++						"[::ffff:176.198.90.204]:8333", "[::ffff:176.9.150.253]:8333", "[::ffff:178.192.9.193]:8333",
++						"[::ffff:178.26.46.97]:8333", "[::ffff:184.181.44.154]:8333", "[::ffff:217.92.137.136]:8333",
++						"[::ffff:218.146.42.163]:8333", "[::ffff:24.134.6.165]:8333", "[::ffff:45.130.58.202]:8333",
++						"[::ffff:45.41.51.43]:8333", "[::ffff:46.226.18.135]:8333", "[::ffff:46.229.238.187]:8333",
++						"[::ffff:46.59.13.35]:8333", "[::ffff:47.181.150.194]:8333", "[::ffff:5.161.244.95]:8333",
++						"[::ffff:62.177.111.78]:8333", "[::ffff:64.130.52.77]:8333", "[::ffff:71.185.186.173]:8333",
++						"[::ffff:80.253.94.252]:8333", "[::ffff:82.67.127.46]:8333", "[::ffff:84.196.182.49]:8333",
++						"[::ffff:86.242.20.49]:8333", "[::ffff:86.254.150.8]:8333", "[::ffff:87.236.195.198]:8333",
++						"[::ffff:95.90.138.145]:8333", "179.51.86.34:8333", "188.63.47.92:8333",
++						"54.248.26.73:8333", "82.67.161.60:8333", "92.252.69.140:8333", "92.98.3.189:8333",
++						"[::ffff:109.202.209.123]:8333", "[::ffff:121.99.109.132]:8333", "[::ffff:13.48.242.195]:8333",
++						"[::ffff:137.175.247.16]:8333", "[::ffff:141.195.182.138]:8333", "[::ffff:141.224.209.201]:8333",
++						"[::ffff:15.134.155.244]:8333", "[::ffff:15.222.135.69]:8333", "[::ffff:159.196.59.9]:8333",
++						"[::ffff:167.235.98.250]:8333", "[::ffff:174.165.47.165]:8333", "[::ffff:176.34.50.242]:8333",
++						"[::ffff:178.26.219.209]:8333", "[::ffff:18.102.201.234]:8333", "[::ffff:181.115.88.2]:8333",
++						"[::ffff:188.34.193.226]:8333", "[::ffff:194.160.169.63]:8333", "[::ffff:194.42.111.175]:8333",
++						"[::ffff:203.12.2.113]:8333", "[::ffff:213.144.146.33]:8333", "[::ffff:3.23.202.194]:8333",
++						"[::ffff:3.24.243.206]:8333", "[::ffff:38.172.231.13]:8333", "[::ffff:43.200.189.153]:8333",
++						"[::ffff:43.202.209.174]:8333", "[::ffff:45.142.17.140]:8333", "[::ffff:47.130.216.204]:8333",
++						"[::ffff:5.56.248.2]:8333", "[::ffff:50.106.24.94]:8333", "[::ffff:51.158.54.195]:8333",
++						"[::ffff:51.44.200.138]:8333", "[::ffff:52.74.41.162]:8333", "[::ffff:54.246.85.218]:8333",
++						"[::ffff:56.125.205.1]:8333", "[::ffff:56.125.249.13]:8333", "[::ffff:56.126.1.10]:8333",
++						"[::ffff:56.126.33.251]:8333", "[::ffff:65.109.125.160]:8333", "[::ffff:68.103.11.30]:8333",
++						"[::ffff:68.231.1.158]:8333", "[::ffff:71.179.175.122]:8333", "[::ffff:72.210.34.27]:8333",
++						"[::ffff:72.253.193.231]:8333", "[::ffff:76.31.239.16]:8333", "[::ffff:77.162.78.194]:8333",
++						"[::ffff:79.160.240.207]:8333", "[::ffff:82.66.107.156]:8333", "[::ffff:85.0.91.69]:8333",
++						"[::ffff:85.3.52.172]:8333", "[::ffff:88.153.65.113]:8333", "[::ffff:89.217.193.252]:8333",
++						"[::ffff:89.56.142.128]:8333", "[::ffff:89.56.206.21]:8333", "[::ffff:90.11.72.52]:8333",
++						"[::ffff:90.189.215.153]:8333", "[::ffff:92.148.116.20]:8333", "[::ffff:93.56.5.69]:8333",
++						"[::ffff:93.89.130.246]:8333" ];
++					seedNodes.InsertRange(0, nodes.Select(IPEndPoint.Parse).Select(x=> new NetworkAddress(x)));
++				}
++			}
++		}
+ 	}
+ 
+ 	private ConcurrentChain ConfigureBlockHeaderChain(string p2PDataDir)
+@@ -266,7 +313,7 @@ public class Global
+ 		{
+ 			internalRpcClient.HttpClient =
+ 				ExternalSourcesHttpClientFactory.CreateClient("long-live-rpc-connection");
+-			internalRpcClient.HttpClient.Timeout = TimeSpan.FromMinutes(2);
++			internalRpcClient.HttpClient.Timeout = TimeSpan.FromMinutes(0.5);
+ 		}
+ 
+ 		return new RpcClientBase(internalRpcClient);
+-- 
+2.53.0
+
+
+From 9755a90f3a2a7e31ecc356ffe76b215508708352 Mon Sep 17 00:00:00 2001
+From: Carti <carti_it@proton.me>
+Date: Thu, 21 May 2026 09:04:46 +0200
+Subject: [PATCH 10/13] move up
+
+---
+ WalletWasabi/Services/Synchronizer.cs | 56 +++++++++++++--------------
+ 1 file changed, 28 insertions(+), 28 deletions(-)
+
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index e3511cfc1b..828a444529 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -40,6 +40,34 @@ public static class FilterProviders
+ 	public static FilterProvider CreateBitcoinP2pFilterProvider(FilterHeaderChain filterHeadersChain, ConcurrentChain blockHeadersChain, CompactFilterBehavior.FilterSynchronizationState synchronizationState) =>
+ 		(fromHeight, fromHash, cancellationToken) => GetFiltersFromBitcoinP2pAsync(filterHeadersChain, blockHeadersChain, synchronizationState, fromHeight, fromHash, cancellationToken);
+ 
++	private static async Task<uint256[]> GetBlockHashesAsync(IRPCClient bitcoinRpcClient,
++	ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
++	{
++		if (blockHeaderChain.Tip?.Height > fromHeight)
++		{
++			return blockHeaderChain
++				.EnumerateAfter(fromHash)
++				.Select(x => x.HashBlock)
++				.Take(1_000)
++				.ToArray();
++		}
++
++		var currentHeight = await bitcoinRpcClient.GetBlockCountAsync(cancellationToken).ConfigureAwait(false);
++		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
++		if (nbOfFiltersToFetch == 0)
++		{
++			return [];
++		}
++
++		var heights = Enumerable.Range((int)fromHeight + 1, (int)nbOfFiltersToFetch).ToArray();
++		var batchClient = bitcoinRpcClient.PrepareBatch();
++		var blockHashTasks = heights.Select(h => batchClient.GetBlockHashAsync(h, cancellationToken)).ToArray();
++		await batchClient.SendBatchAsync(cancellationToken).ConfigureAwait(false);
++
++		var blockHashes = await Task.WhenAll(blockHashTasks).ConfigureAwait(false);
++		return blockHashes;
++	}
++
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinRpcAsync(IRPCClient bitcoinRpcClient, ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+ 	{
+ 		try
+@@ -86,34 +114,6 @@ public static class FilterProviders
+ 		}
+ 	}
+ 
+-	private static async Task<uint256[]> GetBlockHashesAsync(IRPCClient bitcoinRpcClient,
+-		ConcurrentChain blockHeaderChain, uint256 fromHash, uint fromHeight, CancellationToken cancellationToken)
+-	{
+-		if (blockHeaderChain.Tip?.Height > fromHeight)
+-		{
+-			return blockHeaderChain
+-				.EnumerateAfter(fromHash)
+-				.Select(x => x.HashBlock)
+-				.Take(1_000)
+-				.ToArray();
+-		}
+-
+-		var currentHeight = await bitcoinRpcClient.GetBlockCountAsync(cancellationToken).ConfigureAwait(false);
+-		var nbOfFiltersToFetch = Math.Min(1_000, currentHeight - fromHeight);
+-		if (nbOfFiltersToFetch == 0)
+-		{
+-			return [];
+-		}
+-
+-		var heights = Enumerable.Range((int) fromHeight + 1, (int) nbOfFiltersToFetch).ToArray();
+-		var batchClient = bitcoinRpcClient.PrepareBatch();
+-		var blockHashTasks = heights.Select(h => batchClient.GetBlockHashAsync(h, cancellationToken)).ToArray();
+-		await batchClient.SendBatchAsync(cancellationToken).ConfigureAwait(false);
+-
+-		var blockHashes = await Task.WhenAll(blockHashTasks).ConfigureAwait(false);
+-		return blockHashes;
+-	}
+-
+ 	private static async Task<FilterFetchingResult> GetFiltersFromBitcoinP2pAsync(
+ 		FilterHeaderChain filterHeadersChain,
+ 		ConcurrentChain blockHeadersChain,
+-- 
+2.53.0
+
+
+From 3526b28d0f6f73527880a28235165f59dc3e0757 Mon Sep 17 00:00:00 2001
+From: Carti <carti_it@proton.me>
+Date: Thu, 21 May 2026 11:23:11 +0200
+Subject: [PATCH 11/13] CompactFilterBehavior: Make TimeProvider required in
+ `RequestTracker`
+
+---
+ WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
+
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index caebc69e19..9ca31b69db 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -409,16 +409,15 @@ public class CompactFilterBehavior(
+ 
+ 		private readonly Channel<FilterResponse> _readyFiltersChannel;
+ 
+-		public FilterSynchronizationState(ConcurrentChain blockHeaderChain, FilterHeaderChain filterHeaderChain,
+-			TimeProvider? timeProvider = null)
++		public FilterSynchronizationState(ConcurrentChain blockHeaderChain, FilterHeaderChain filterHeaderChain, TimeProvider? timeProvider = null)
+ 		{
+ 			_blockHeaderChain = blockHeaderChain;
+ 			_filterHeaderChain = filterHeaderChain;
+ 			_timeProvider = timeProvider ?? TimeProvider.System;
+ 
+ 			var initialHeaderHeight = _filterHeaderChain.Tip?.Height ?? 0;
+-			_headerTracker = new RequestTracker<HeaderResponse>(initialHeaderHeight, _timeProvider);
+-			_filterTracker = new RequestTracker<FilterResponse>(0, _timeProvider);
++			_headerTracker = new RequestTracker<HeaderResponse>(_timeProvider, initialHeaderHeight);
++			_filterTracker = new RequestTracker<FilterResponse>(_timeProvider, 0);
+ 
+ 			_readyFiltersChannel = Channel.CreateUnbounded<FilterResponse>();
+ 		}
+@@ -427,7 +426,7 @@ public class CompactFilterBehavior(
+ 			ChainHeight tipHeight, TimeProvider? timeProvider = null)
+ 			: this(blockHeaders, filterHeaders, timeProvider)
+ 		{
+-			_filterTracker = new RequestTracker<FilterResponse>(tipHeight, _timeProvider);
++			_filterTracker = new RequestTracker<FilterResponse>(_timeProvider, tipHeight);
+ 		}
+ 
+ 		internal bool TryAssignHeaderRange([NotNullWhen(true)] out RangeRequest? assignment)
+@@ -804,9 +803,9 @@ public class CompactFilterBehavior(
+ 		}
+ 	}
+ 
+-	class RequestTracker<TProcessedResponse>(uint initialHeight = 0, TimeProvider? timeProvider = null) where TProcessedResponse : Response
++	class RequestTracker<TProcessedResponse>(TimeProvider timeProvider, uint initialHeight = 0) where TProcessedResponse : Response
+ 	{
+-		private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
++		private readonly TimeProvider _timeProvider = timeProvider;
+ 		private readonly SortedDictionary<uint, TProcessedResponse> _pendingResponses = [];
+ 		private readonly SortedDictionary<uint, DateTime> _activeAssignments = [];
+ 
+-- 
+2.53.0
+
+
+From be74f4c5661a7e6cbf76cc8b72134aaa3797cd80 Mon Sep 17 00:00:00 2001
+From: Carti <carti_it@proton.me>
+Date: Thu, 21 May 2026 11:11:00 +0200
+Subject: [PATCH 12/13] CompactFilterBehavior: Simplify
+
+---
+ .../BitcoinP2p/CompactFilterBehavior.cs       | 20 ++++---------------
+ WalletWasabi/Services/Synchronizer.cs         | 10 +++-------
+ 2 files changed, 7 insertions(+), 23 deletions(-)
+
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index 9ca31b69db..e0e0d89a34 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -1,10 +1,10 @@
+ using System.Collections.Generic;
+ using System.Diagnostics.CodeAnalysis;
+ using System.Linq;
+-using System.Runtime.CompilerServices;
+ using System.Security.Cryptography;
+ using System.Threading;
+ using System.Threading.Channels;
++using System.Threading.Tasks;
+ using NBitcoin;
+ using NBitcoin.Protocol;
+ using NBitcoin.Protocol.Behaviors;
+@@ -604,23 +604,11 @@ public class CompactFilterBehavior(
+ 			return header is not null;
+ 		}
+ 
+-		public async IAsyncEnumerable<FilterModel> GetNextRangeFiltersAsync(
+-			[EnumeratorCancellation] CancellationToken cancellationToken)
++		public async Task<FilterModel[]> GetNextRangeFiltersAsync(CancellationToken cancellationToken)
+ 		{
+-			// Read the next range from the channel
+ 			var filterResponse = await _readyFiltersChannel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+-
+-			Logger.LogDebug(
+-				$"Starting to yield {filterResponse.Filters.Length} filters from range {filterResponse.StartHeight}");
+-
+-			foreach (var filter in filterResponse.Filters)
+-			{
+-				cancellationToken.ThrowIfCancellationRequested();
+-				yield return filter;
+-			}
+-
+-			Logger.LogDebug(
+-				$"Filter range {filterResponse.StartHeight} consumed ({filterResponse.Filters.Length} filters)");
++			Logger.LogDebug($"Filter range {filterResponse.StartHeight} consumed ({filterResponse.Filters.Length} filters)");
++			return filterResponse.Filters;
+ 		}
+ 
+ 		internal bool TryAssignFilterRange([NotNullWhen(true)] out RangeRequest? assignment)
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 828a444529..23125fe79c 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -154,24 +154,20 @@ public static class FilterProviders
+ 			Logger.LogDebug($"Requesting filters from height {fromHeight + 1} (filter headers tip: {filterHeadersTip.Height})");
+ 
+ 			// Consume filters from the async stream (one page at a time)
+-			var filters = new List<FilterModel>();
+ 			using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+ 			using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+ 
+ 			try
+ 			{
+-				await foreach (var filter in synchronizationState.GetNextRangeFiltersAsync(linkedCts.Token).ConfigureAwait(false))
+-				{
+-					filters.Add(filter);
+-				}
++				var filters = await synchronizationState.GetNextRangeFiltersAsync(linkedCts.Token).ConfigureAwait(false);
+ 
+-				if (filters.Count == 0)
++				if (filters.Length == 0)
+ 				{
+ 					Logger.LogWarning("Received 0 filters from P2P, retrying in 1 second");
+ 					return FilterFetchingResult.Fail(TimeSpan.FromSeconds(1));
+ 				}
+ 
+-				Logger.LogDebug($"Successfully received {filters.Count} filters from P2P (heights {filters[0].Header.Height}-{filters[^1].Header.Height})");
++				Logger.LogDebug($"Successfully received {filters.Length} filters from P2P (heights {filters[0].Header.Height}-{filters[^1].Header.Height})");
+ 				return NewFiltersAvailable((uint)blockHeadersChain.Tip.Height, filters.ToArray());
+ 			}
+ 			catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
+-- 
+2.53.0
+
+
+From 9d4c48fe8e38549ede960169f07b51c211c1d5fa Mon Sep 17 00:00:00 2001
+From: Carti <carti_it@proton.me>
+Date: Thu, 21 May 2026 11:13:50 +0200
+Subject: [PATCH 13/13] CompactFilterBehavior: GetNextRangeFiltersAsync ->
+ GetNextFilterBatchAsync
+
+---
+ WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs | 2 +-
+ WalletWasabi/Services/Synchronizer.cs            | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index e0e0d89a34..40f4547c8d 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -604,7 +604,7 @@ public class CompactFilterBehavior(
+ 			return header is not null;
+ 		}
+ 
+-		public async Task<FilterModel[]> GetNextRangeFiltersAsync(CancellationToken cancellationToken)
++		public async Task<FilterModel[]> GetNextFilterBatchAsync(CancellationToken cancellationToken)
+ 		{
+ 			var filterResponse = await _readyFiltersChannel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
+ 			Logger.LogDebug($"Filter range {filterResponse.StartHeight} consumed ({filterResponse.Filters.Length} filters)");
+diff --git a/WalletWasabi/Services/Synchronizer.cs b/WalletWasabi/Services/Synchronizer.cs
+index 23125fe79c..e47d99e6da 100644
+--- a/WalletWasabi/Services/Synchronizer.cs
++++ b/WalletWasabi/Services/Synchronizer.cs
+@@ -159,7 +159,7 @@ public static class FilterProviders
+ 
+ 			try
+ 			{
+-				var filters = await synchronizationState.GetNextRangeFiltersAsync(linkedCts.Token).ConfigureAwait(false);
++				var filters = await synchronizationState.GetNextFilterBatchAsync(linkedCts.Token).ConfigureAwait(false);
+ 
+ 				if (filters.Length == 0)
+ 				{
+-- 
+2.53.0
+

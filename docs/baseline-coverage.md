@@ -6,9 +6,9 @@ tests that already exist in Kyoto and Neutrino.
 The scenario catalog therefore includes:
 
 - 8 Kyoto baseline scenarios matching the integration tests in
-  `/home/user/kyoto/tests/core.rs`.
+  `2140-dev/kyoto:tests/core.rs`.
 - 53 Neutrino baseline scenarios matching the sync, blockmanager, bamboozle,
-  and filter-verification cases in `/home/user/neutrino`.
+  and filter-verification cases in `lightninglabs/neutrino`.
 - Additional conformance scenarios that are deliberately stronger than both
   implementation test suites, especially adversarial peer and temporary network
   failure cases.

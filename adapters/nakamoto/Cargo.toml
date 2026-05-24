@@ -6,10 +6,10 @@ edition = "2021"
 [dependencies]
 axum = "0.7"
 hex = "0.4"
-nakamoto-client = { path = "../../../nakamoto/client" }
-nakamoto-common = { path = "../../../nakamoto/common" }
-nakamoto-net = { path = "../../../nakamoto/net" }
-nakamoto-net-poll = { path = "../../../nakamoto/net/poll" }
+nakamoto-client = { git = "https://github.com/cloudhead/nakamoto", rev = "76ab7a3b6207373399cd15a90037294bb08beeb5" }
+nakamoto-common = { git = "https://github.com/cloudhead/nakamoto", rev = "76ab7a3b6207373399cd15a90037294bb08beeb5" }
+nakamoto-net = { git = "https://github.com/cloudhead/nakamoto", rev = "76ab7a3b6207373399cd15a90037294bb08beeb5" }
+nakamoto-net-poll = { git = "https://github.com/cloudhead/nakamoto", rev = "76ab7a3b6207373399cd15a90037294bb08beeb5" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }

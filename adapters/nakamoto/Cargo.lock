@@ -371,6 +371,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-chain"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "log",
  "nakamoto-common",
@@ -380,6 +381,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-client"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "crossbeam-channel",
  "fastrand",
@@ -395,6 +397,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-common"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes",
@@ -409,6 +412,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-net"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "crossbeam-channel",
  "fastrand",
@@ -419,6 +423,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-net-poll"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "crossbeam-channel",
  "libc",
@@ -431,6 +436,7 @@ dependencies = [
 [[package]]
 name = "nakamoto-p2p"
 version = "0.4.0"
+source = "git+https://github.com/cloudhead/nakamoto?rev=76ab7a3b6207373399cd15a90037294bb08beeb5#76ab7a3b6207373399cd15a90037294bb08beeb5"
 dependencies = [
  "crossbeam-channel",
  "fastrand",

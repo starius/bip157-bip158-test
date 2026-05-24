@@ -8,7 +8,7 @@ require (
 	github.com/btcsuite/btcd/btcutil v1.1.5
 	github.com/btcsuite/btcd/chaincfg/chainhash v1.1.0
 	github.com/btcsuite/btcwallet/walletdb v1.3.5
-	github.com/lightninglabs/neutrino v0.0.0
+	github.com/lightninglabs/neutrino v0.17.1
 )
 
 require (
@@ -39,5 +39,3 @@ require (
 )
 
 replace github.com/bip157-bip158-test/suite => ../..
-
-replace github.com/lightninglabs/neutrino => ../../../neutrino

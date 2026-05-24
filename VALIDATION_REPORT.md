@@ -91,12 +91,12 @@ matches from P2P data.
 Wasabi master remains outside the strict BIP157 P2P matrix because its current
 standard-filter path uses Bitcoin RPC filter calls.
 
-The evaluated P2P compact-filter PR branch is still experimental. It contains
+The evaluated P2P compact-filter PR code is saved as a local patch and contains
 useful validation logic for empty `cfheaders`, wrong ranges, previous-header
-mismatches, malformed GCS filters, and filter-header mismatches, and those
-ideas are now represented in the suite. It is not yet a strict adapter target:
-the app startup path still constructs and monitors Bitcoin RPC, and the
-regtest P2P helper hardcodes the default regtest peer port instead of accepting
+mismatches, malformed GCS filters, and filter-header mismatches. Those ideas
+are now represented in the suite. It is not yet a strict adapter target: the
+app startup path still constructs and monitors Bitcoin RPC, and the regtest P2P
+helper hardcodes the default regtest peer port instead of accepting
 harness-supplied peers.
 
 ## Remaining Gaps

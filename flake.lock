@@ -1,5 +1,56 @@
 {
   "nodes": {
+    "kyoto-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1778587072,
+        "narHash": "sha256-NQyZvk4G1ZNtnvpNqysuTp21w5moeYVm9UUdNHOHmw0=",
+        "owner": "2140-dev",
+        "repo": "kyoto",
+        "rev": "ae6b20f721a45cfc06d29d5cf03c8e5ac8148e50",
+        "type": "github"
+      },
+      "original": {
+        "owner": "2140-dev",
+        "repo": "kyoto",
+        "rev": "ae6b20f721a45cfc06d29d5cf03c8e5ac8148e50",
+        "type": "github"
+      }
+    },
+    "nakamoto-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1709297807,
+        "narHash": "sha256-wfVlPPhPTlPW7MCV19DuD2RSarr8abj8ljZ5U6tjlSg=",
+        "owner": "cloudhead",
+        "repo": "nakamoto",
+        "rev": "76ab7a3b6207373399cd15a90037294bb08beeb5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "cloudhead",
+        "repo": "nakamoto",
+        "rev": "76ab7a3b6207373399cd15a90037294bb08beeb5",
+        "type": "github"
+      }
+    },
+    "neutrino-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779330190,
+        "narHash": "sha256-OgUh7noms6YxjRvVE88gMDFAxY4kRcDWPYOriUrXiVc=",
+        "owner": "lightninglabs",
+        "repo": "neutrino",
+        "rev": "e526dbe7e7b270a85a4eb45bbd2ce143a594966e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "lightninglabs",
+        "ref": "v0.17.1",
+        "repo": "neutrino",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1779536132,
@@ -18,7 +69,28 @@
     },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs"
+        "kyoto-src": "kyoto-src",
+        "nakamoto-src": "nakamoto-src",
+        "neutrino-src": "neutrino-src",
+        "nixpkgs": "nixpkgs",
+        "wasabi-src": "wasabi-src"
+      }
+    },
+    "wasabi-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779383993,
+        "narHash": "sha256-SmwkFFxncKYmWxwC4YHo/9d2C77BPKL/boqIhYFswGM=",
+        "owner": "WalletWasabi",
+        "repo": "WalletWasabi",
+        "rev": "3660452fa4655b8af0bedd33ceb44948d53ee660",
+        "type": "github"
+      },
+      "original": {
+        "owner": "WalletWasabi",
+        "repo": "WalletWasabi",
+        "rev": "3660452fa4655b8af0bedd33ceb44948d53ee660",
+        "type": "github"
       }
     }
   },

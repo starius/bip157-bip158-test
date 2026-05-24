@@ -64,9 +64,11 @@ go build -o neutrino-adapter .
 ./neutrino-adapter --listen 127.0.0.1:0
 ```
 
-The Neutrino adapter expects the Neutrino checkout at `../neutrino` relative to
-the suite root. It wraps `ChainService`, watches P2WPKH scripts through
-Neutrino's rescan API, and records output/spend matches from filtered blocks.
+The Neutrino adapter pins
+[`lightninglabs/neutrino`](https://github.com/lightninglabs/neutrino) through
+`adapters/neutrino/go.mod`. It wraps `ChainService`, watches P2WPKH scripts
+through Neutrino's rescan API, and records output/spend matches from filtered
+blocks.
 
 ### Kyoto
 
@@ -77,9 +79,11 @@ cargo build --release
 ./target/release/kyoto-adapter --listen 127.0.0.1:0
 ```
 
-The Kyoto adapter expects the Kyoto checkout at `../kyoto` relative to the suite
-root. It consumes `IndexedFilter` events, requests matching blocks through
-Kyoto, and records output/spend matches from those blocks.
+The Kyoto adapter pins
+[`2140-dev/kyoto`](https://github.com/2140-dev/kyoto) through
+`adapters/kyoto/Cargo.toml`. It consumes `IndexedFilter` events, requests
+matching blocks through Kyoto, and records output/spend matches from those
+blocks.
 
 ### Nakamoto
 
@@ -90,11 +94,12 @@ cargo build --release
 ./target/release/nakamoto-adapter --listen 127.0.0.1:0
 ```
 
-The Nakamoto adapter expects the Nakamoto checkout at `../nakamoto` relative to
-the suite root. It runs Nakamoto in regtest mode, sets the harness-supplied
-peers as explicit `connect` peers, listens only on localhost, and records
-output/spend matches from blocks Nakamoto downloads after compact-filter
-matches.
+The Nakamoto adapter pins
+[`cloudhead/nakamoto`](https://github.com/cloudhead/nakamoto) through
+`adapters/nakamoto/Cargo.toml`. It runs Nakamoto in regtest mode, sets the
+harness-supplied peers as explicit `connect` peers, listens only on localhost,
+and records output/spend matches from blocks Nakamoto downloads after
+compact-filter matches.
 
 Nakamoto does not currently expose a durable ban list through the public handle.
 The adapter therefore reports a peer as non-banned but disconnected with an
@@ -110,19 +115,17 @@ suite's strict adapter contract requires all needed block headers, compact
 filter headers, compact filters, and blocks to come from the Bitcoin P2P
 network without RPC, Electrum, esplora, or a Wasabi backend.
 
-The open P2P compact-filter PR branch can be evaluated as
-`wasabi-p2p-experimental` if it can be built and driven headlessly on regtest.
-Until that branch is stable enough to pin and run through the adapter API, it
-is documented as an experimental target rather than scored in the strict
-green/orange/red matrix.
+The P2P compact-filter PR code is saved as a local patch at
+`nix/patches/wasabi/0001-p2p-compact-filter-provider.patch`. The Nix shell pins
+the stable public base commit from
+[`WalletWasabi/WalletWasabi`](https://github.com/WalletWasabi/WalletWasabi)
+and exposes `WASABI_SOURCE` plus `WASABI_P2P_PATCH` for adapter builds.
 
 The evaluated PR branch targets .NET 10. The Nix shell includes
 `dotnet-sdk_10` so future Wasabi adapter experiments can build with the SDK
 requested by `global.json`.
 
-Current strict-adapter blocker: the Wasabi client startup path still constructs
-and monitors a Bitcoin RPC client, then uses P2P compact filters as a fallback
-when RPC filter support is unavailable. Its regtest P2P helper also connects to
-`Network.RegTest.DefaultPort` rather than to harness-supplied peers. A strict
-adapter therefore needs either a small Wasabi-library harness that bypasses
-that app startup path or upstream support for explicit regtest P2P peers.
+The strict Wasabi adapter should be a small library-level wrapper around
+Wasabi's P2P filter code, not a wrapper around the full application. It must
+construct a harness-controlled regtest peer set, attach Wasabi's header and
+compact-filter behaviors, and expose the suite adapter API.
