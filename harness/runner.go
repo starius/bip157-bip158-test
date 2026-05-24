@@ -24,6 +24,20 @@ type Options struct {
 	Timeout    time.Duration
 }
 
+type adapterScenario struct {
+	id      string
+	title   string
+	level   score.Level
+	fixture *chainlab.Fixture
+	run     func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
+}
+
+type resultSpec struct {
+	id    string
+	title string
+	level score.Level
+}
+
 // Run executes the currently implemented scenario set and marks the rest of
 // the catalog as skipped. This makes incremental development honest: missing
 // scenarios are visible in every report.
@@ -44,13 +58,7 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 		if err != nil {
 			return score.Summary{}, err
 		}
-		for _, adapterScenario := range []struct {
-			id      string
-			title   string
-			level   score.Level
-			fixture *chainlab.Fixture
-			run     func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
-		}{
+		scenarios := []adapterScenario{
 			{
 				id:      "adapter.honest_wallet_receive_spend",
 				title:   "honest peer wallet receive and spend",
@@ -170,7 +178,9 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				fixture: longFixture,
 				run:     runBlockDownloadOutageAdapter,
 			},
-		} {
+		}
+		scenarios = append(scenarios, expandedAdapterScenarios(longFixture)...)
+		for _, adapterScenario := range scenarios {
 			scenarioOpts := scenarioOptions(opts, adapterScenario.id)
 			adapterResults, err := adapterScenario.run(ctx, scenarioOpts, adapterScenario.fixture)
 			if err != nil {
@@ -188,6 +198,142 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	}
 
 	return score.Summarize(results), nil
+}
+
+func expandedAdapterScenarios(fixture *chainlab.Fixture) []adapterScenario {
+	var scenarios []adapterScenario
+
+	for _, test := range []struct {
+		id     string
+		height uint32
+	}{
+		{"neutrino.cfheaders_mismatch.case_2", 1},
+		{"neutrino.cfheaders_mismatch.case_3", 10},
+		{"neutrino.cfheaders_mismatch.case_4", wire.CFCheckptInterval - 1},
+		{"neutrino.cfheaders_mismatch.case_5", wire.CFCheckptInterval},
+		{"neutrino.cfheaders_mismatch.case_6", wire.CFCheckptInterval + 1},
+		{"neutrino.cfheaders_mismatch.case_7", chainlab.DefaultLongChainHeight},
+	} {
+		spec := resultSpec{
+			id:    test.id,
+			title: "compact-filter-header mismatch " + test.id[strings.LastIndex(test.id, ".")+1:],
+			level: score.Should,
+		}
+		scenarios = append(scenarios, adapterScenario{
+			id:      test.id,
+			title:   spec.title,
+			level:   spec.level,
+			fixture: fixture,
+			run: func(height uint32, spec resultSpec) func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error) {
+				return func(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+					return runFilterHeaderConflictAtHeightAdapter(ctx, opts, fixture, height, []resultSpec{spec})
+				}
+			}(test.height, spec),
+		})
+	}
+
+	for _, test := range []struct {
+		id      string
+		corrupt map[uint32]bool
+	}{
+		{"neutrino.cfcheckpt_sanity.case_2", map[uint32]bool{wire.CFCheckptInterval * 2: true}},
+		{"neutrino.cfcheckpt_sanity.case_3", map[uint32]bool{wire.CFCheckptInterval: true, wire.CFCheckptInterval * 2: true}},
+		{"neutrino.cfcheckpt_sanity.case_4", map[uint32]bool{wire.CFCheckptInterval: true}},
+		{"neutrino.cfcheckpt_sanity.case_5", map[uint32]bool{wire.CFCheckptInterval * 2: true}},
+		{"neutrino.cfcheckpt_sanity.case_6", map[uint32]bool{wire.CFCheckptInterval: true, wire.CFCheckptInterval * 2: true}},
+		{"neutrino.cfcheckpt_sanity.case_7", map[uint32]bool{wire.CFCheckptInterval: true}},
+		{"neutrino.cfcheckpt_sanity.case_8", map[uint32]bool{wire.CFCheckptInterval * 2: true}},
+		{"neutrino.cfcheckpt_sanity.case_9", map[uint32]bool{wire.CFCheckptInterval: true, wire.CFCheckptInterval * 2: true}},
+	} {
+		spec := resultSpec{
+			id:    test.id,
+			title: "compact-filter checkpoint sanity " + test.id[strings.LastIndex(test.id, ".")+1:],
+			level: score.Should,
+		}
+		scenarios = append(scenarios, adapterScenario{
+			id:      test.id,
+			title:   spec.title,
+			level:   spec.level,
+			fixture: fixture,
+			run: func(corrupt map[uint32]bool, spec resultSpec) func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error) {
+				return func(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+					return runBadCFCheckptWithCorruptionAdapter(ctx, opts, fixture, corrupt, []resultSpec{spec})
+				}
+			}(test.corrupt, spec),
+		})
+	}
+
+	for _, test := range []struct {
+		id     string
+		height uint32
+	}{
+		{"neutrino.resolve_filter_mismatch.case_1", 1},
+		{"neutrino.resolve_filter_mismatch.case_2", 2},
+		{"neutrino.resolve_filter_mismatch.case_3", 1},
+		{"neutrino.resolve_filter_mismatch.case_4", 2},
+		{"neutrino.resolve_filter_mismatch.case_5", 1},
+		{"neutrino.resolve_filter_mismatch.case_6", 2},
+		{"neutrino.resolve_filter_mismatch.case_7", 1},
+		{"neutrino.resolve_filter_mismatch.case_8", 2},
+		{"neutrino.resolve_filter_mismatch.case_9", 1},
+		{"neutrino.resolve_filter_mismatch.case_10", 2},
+		{"neutrino.resolve_filter_mismatch.case_11", 1},
+		{"neutrino.resolve_filter_mismatch.case_12", 2},
+		{"neutrino.resolve_filter_mismatch.case_13", 2},
+	} {
+		spec := resultSpec{
+			id:    test.id,
+			title: "resolve filter mismatch from block " + test.id[strings.LastIndex(test.id, ".")+1:],
+			level: score.Should,
+		}
+		scenarios = append(scenarios, adapterScenario{
+			id:      test.id,
+			title:   spec.title,
+			level:   spec.level,
+			fixture: fixture,
+			run: func(height uint32, spec resultSpec) func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error) {
+				return func(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+					return runBadCFilterAtHeightAdapter(ctx, opts, fixture, height, []resultSpec{spec})
+				}
+			}(test.height, spec),
+		})
+	}
+
+	for _, test := range []struct {
+		id    string
+		title string
+		level score.Level
+		run   func(context.Context, Options, *chainlab.Fixture) ([]score.Result, error)
+	}{
+		{
+			id:    "neutrino.blockmanager_invalid_interval.wrong_genesis",
+			title: "invalid filter-header interval wrong_genesis",
+			level: score.Must,
+			run:   runWrongGenesisIntervalAdapter,
+		},
+		{
+			id:    "neutrino.blockmanager_invalid_interval.interval_misaligned",
+			title: "invalid filter-header interval interval_misaligned",
+			level: score.Must,
+			run:   runMisalignedIntervalAdapter,
+		},
+		{
+			id:    "neutrino.handle_headers.valid_then_scrambled",
+			title: "valid headers accepted and scrambled headers disconnected",
+			level: score.Must,
+			run:   runScrambledHeadersAdapter,
+		},
+	} {
+		scenarios = append(scenarios, adapterScenario{
+			id:      test.id,
+			title:   test.title,
+			level:   test.level,
+			fixture: fixture,
+			run:     test.run,
+		})
+	}
+
+	return scenarios
 }
 
 func scenarioOptions(opts Options, id string) Options {
@@ -265,6 +411,9 @@ func runBIP158Internal(fixture *chainlab.Fixture) []score.Result {
 
 	fullScript, err := fullScriptNotPushDataCheck()
 	results = append(results, resultFromBool("bip158.full_script_not_pushdata", score.Must, fullScript && err == nil, err))
+
+	standardScripts, err := standardScriptFilterCheck()
+	results = append(results, resultFromBool("neutrino.verify_basic_filter.standard_scripts", score.Must, standardScripts && err == nil, err))
 	return results
 }
 
@@ -323,6 +472,27 @@ func zeroElementOPReturnCheck() (bool, error) {
 	return len(serialized) == 1 && serialized[0] == 0 && !matches, nil
 }
 
+func standardScriptFilterCheck() (bool, error) {
+	scripts := [][]byte{
+		append([]byte{0x76, 0xa9, 0x14}, append(bytesOf(0x21, 20), 0x88, 0xac)...),
+		append([]byte{0xa9, 0x14}, append(bytesOf(0x22, 20), 0x87)...),
+		append([]byte{0x00, 0x14}, bytesOf(0x23, 20)...),
+		append([]byte{0x00, 0x20}, bytesOf(0x24, 32)...),
+		append([]byte{0x51, 0x20}, bytesOf(0x25, 32)...),
+	}
+	for _, script := range scripts {
+		serialized, blockHash, err := chainlab.BuildSingleOutputFilter(script)
+		if err != nil {
+			return false, err
+		}
+		match, err := chainlab.Contains(serialized, blockHash, script)
+		if err != nil || !match {
+			return false, err
+		}
+	}
+	return zeroElementOPReturnCheck()
+}
+
 func bytesOf(value byte, count int) []byte {
 	out := make([]byte, count)
 	for i := range out {
@@ -342,6 +512,20 @@ func resultFromBool(id string, level score.Level, ok bool, err error) score.Resu
 		evidence = err.Error()
 	}
 	return score.Result{ID: id, Level: level, Status: status, Evidence: evidence}
+}
+
+func resultsFromSpecs(specs []resultSpec, status score.Status, evidence string) []score.Result {
+	results := make([]score.Result, 0, len(specs))
+	for _, spec := range specs {
+		results = append(results, score.Result{
+			ID:       spec.id,
+			Title:    spec.title,
+			Level:    spec.level,
+			Status:   status,
+			Evidence: evidence,
+		})
+	}
+	return results
 }
 
 func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
@@ -505,6 +689,51 @@ func clientMethodFailure(evidence string) []score.Result {
 	}}
 }
 
+func runScrambledHeadersAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		CorruptHeaders: map[uint32]bool{2: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "scrambled-headers",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	probeCtx, cancel := context.WithTimeout(ctx, badPeerProbeTimeout(opts))
+	defer cancel()
+	waitErr := waitForAdapterTip(probeCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	specs := []resultSpec{{
+		id:    "neutrino.handle_headers.valid_then_scrambled",
+		title: "valid headers accepted and scrambled headers disconnected",
+		level: score.Must,
+	}}
+	if ok, evidence := peerPunishedAfter(peers, "scrambled-headers", bad, "headers"); ok {
+		return resultsFromSpecs(specs, score.Pass, evidence), nil
+	}
+	if waitErr == nil {
+		return resultsFromSpecs(specs, score.Fail, "adapter accepted a scrambled header chain"), nil
+	}
+	return resultsFromSpecs(
+		specs,
+		score.Fail,
+		fmt.Sprintf("%v; %s", waitErr, transcriptSummary("scrambled-headers", bad)),
+	), nil
+}
+
 func runMultiPeerInitialSyncAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	peerA := peerlab.NewServer(fixture)
 	if err := peerA.Start("127.0.0.1:0"); err != nil {
@@ -643,6 +872,18 @@ func runCFHeadersBoundaryAdapter(ctx context.Context, opts Options, fixture *cha
 }
 
 func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runFilterHeaderConflictAtHeightAdapter(ctx, opts, fixture, 2, []resultSpec{{
+		id:    "bip157.conflict_one_honest_one_liar",
+		title: "one honest and one liar filter-header conflict",
+		level: score.Should,
+	}, {
+		id:    "neutrino.cfheaders_mismatch.case_1",
+		title: "compact-filter-header mismatch case 1",
+		level: score.Should,
+	}})
+}
+
+func runFilterHeaderConflictAtHeightAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture, height uint32, specs []resultSpec) ([]score.Result, error) {
 	honest := peerlab.NewServer(fixture)
 	if err := honest.Start("127.0.0.1:0"); err != nil {
 		return nil, err
@@ -650,7 +891,7 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 	defer honest.Stop()
 
 	liar := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
-		CorruptCFHeaders: map[uint32]bool{2: true},
+		CorruptCFHeaders: map[uint32]bool{height: true},
 	}))
 	if err := liar.Start("127.0.0.1:0"); err != nil {
 		return nil, err
@@ -689,34 +930,30 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
 	if ok, evidence := peerPunishedAfter(peers, "liar-cfheaders", liar, "cfheaders"); ok {
-		return filterHeaderConflictResults(score.Pass, evidence), nil
+		return resultsFromSpecs(specs, score.Pass, evidence), nil
 	}
 	evidence := "liar-cfheaders was not punished after conflicting filter headers"
 	if waitErr != nil {
 		evidence = fmt.Sprintf("%v; %s; %s", waitErr, transcriptSummary("honest-cfheaders", honest), transcriptSummary("liar-cfheaders", liar))
 	}
-	return filterHeaderConflictResults(score.Fail, evidence), nil
-}
-
-func filterHeaderConflictResults(status score.Status, evidence string) []score.Result {
-	return []score.Result{{
-		ID:       "bip157.conflict_one_honest_one_liar",
-		Title:    "one honest and one liar filter-header conflict",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}, {
-		ID:       "neutrino.cfheaders_mismatch.case_1",
-		Title:    "compact-filter-header mismatch case 1",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}}
+	return resultsFromSpecs(specs, score.Fail, evidence), nil
 }
 
 func runBadCFCheckptAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runBadCFCheckptWithCorruptionAdapter(ctx, opts, fixture, map[uint32]bool{1000: true}, []resultSpec{{
+		id:    "bip157.bad_cfcheckpt_response",
+		title: "bad compact-filter checkpoint response is rejected or punished",
+		level: score.Should,
+	}, {
+		id:    "neutrino.cfcheckpt_sanity.case_1",
+		title: "compact-filter checkpoint sanity case 1",
+		level: score.Should,
+	}})
+}
+
+func runBadCFCheckptWithCorruptionAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture, corrupt map[uint32]bool, specs []resultSpec) ([]score.Result, error) {
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
-		CorruptCFCheckpts: map[uint32]bool{1000: true},
+		CorruptCFCheckpts: corrupt,
 	}))
 	if err := bad.Start("127.0.0.1:0"); err != nil {
 		return nil, err
@@ -742,34 +979,54 @@ func runBadCFCheckptAdapter(ctx context.Context, opts Options, fixture *chainlab
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-cfcheckpt", bad, "cfcheckpt"); ok {
-		return badCFCheckptResults(score.Pass, evidence), nil
+		return resultsFromSpecs(specs, score.Pass, evidence), nil
 	}
 	evidence := "bad-cfcheckpt was not punished after serving a corrupt checkpoint"
 	if waitErr != nil {
 		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-cfcheckpt", bad))
 	}
-	return badCFCheckptResults(score.Fail, evidence), nil
-}
-
-func badCFCheckptResults(status score.Status, evidence string) []score.Result {
-	return []score.Result{{
-		ID:       "bip157.bad_cfcheckpt_response",
-		Title:    "bad compact-filter checkpoint response is rejected or punished",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}, {
-		ID:       "neutrino.cfcheckpt_sanity.case_1",
-		Title:    "compact-filter checkpoint sanity case 1",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}}
+	return resultsFromSpecs(specs, score.Fail, evidence), nil
 }
 
 func runBadPrevFilterHeaderAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runBadPrevFilterHeaderWithSpecsAdapter(ctx, opts, fixture, map[uint32]bool{0: true, 1: true, wire.CFCheckptInterval: true}, []resultSpec{{
+		id:    "bip157.bad_cfheaders_prev_header",
+		title: "bad compact-filter previous header is rejected or punished",
+		level: score.Should,
+	}, {
+		id:    "neutrino.blockmanager_invalid_interval.invalid_prev_header",
+		title: "invalid filter-header interval invalid_prev_header",
+		level: score.Must,
+	}})
+}
+
+func runWrongGenesisIntervalAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runBadPrevFilterHeaderWithSpecsAdapter(ctx, opts, fixture, map[uint32]bool{0: true, 1: true}, []resultSpec{{
+		id:    "neutrino.blockmanager_invalid_interval.wrong_genesis",
+		title: "invalid filter-header interval wrong_genesis",
+		level: score.Must,
+	}, {
+		id:    "neutrino.blockmanager_invalid_interval.wrong_genesis_partial",
+		title: "invalid filter-header interval wrong_genesis_partial",
+		level: score.Must,
+	}})
+}
+
+func runMisalignedIntervalAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runBadPrevFilterHeaderWithSpecsAdapter(ctx, opts, fixture, map[uint32]bool{wire.CFCheckptInterval: true}, []resultSpec{{
+		id:    "neutrino.blockmanager_invalid_interval.interval_misaligned",
+		title: "invalid filter-header interval interval_misaligned",
+		level: score.Must,
+	}, {
+		id:    "neutrino.blockmanager_invalid_interval.interval_misaligned_partial",
+		title: "invalid filter-header interval interval_misaligned_partial",
+		level: score.Must,
+	}})
+}
+
+func runBadPrevFilterHeaderWithSpecsAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture, corrupt map[uint32]bool, specs []resultSpec) ([]score.Result, error) {
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
-		CorruptPrevFilterHeader: map[uint32]bool{0: true, 1: true, wire.CFCheckptInterval: true},
+		CorruptPrevFilterHeader: corrupt,
 	}))
 	if err := bad.Start("127.0.0.1:0"); err != nil {
 		return nil, err
@@ -795,29 +1052,13 @@ func runBadPrevFilterHeaderAdapter(ctx context.Context, opts Options, fixture *c
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-prev-filter-header", bad, "cfheaders"); ok {
-		return badPrevFilterHeaderResults(score.Pass, evidence), nil
+		return resultsFromSpecs(specs, score.Pass, evidence), nil
 	}
 	evidence := "bad-prev-filter-header was not punished after serving a corrupt previous filter header"
 	if waitErr != nil {
 		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-prev-filter-header", bad))
 	}
-	return badPrevFilterHeaderResults(score.Fail, evidence), nil
-}
-
-func badPrevFilterHeaderResults(status score.Status, evidence string) []score.Result {
-	return []score.Result{{
-		ID:       "bip157.bad_cfheaders_prev_header",
-		Title:    "bad compact-filter previous header is rejected or punished",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}, {
-		ID:       "neutrino.blockmanager_invalid_interval.invalid_prev_header",
-		Title:    "invalid filter-header interval invalid_prev_header",
-		Level:    score.Must,
-		Status:   status,
-		Evidence: evidence,
-	}}
+	return resultsFromSpecs(specs, score.Fail, evidence), nil
 }
 
 func runEmptyCFHeadersAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
@@ -922,8 +1163,24 @@ func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chain
 }
 
 func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	return runBadCFilterAtHeightAdapter(ctx, opts, fixture, 2, []resultSpec{{
+		id:    "bip157.direct_bad_cfilter_ban",
+		title: "bad direct cfilter response is punished",
+		level: score.Should,
+	}, {
+		id:    "neutrino.detect_bad_peers.filter_hash_mismatch",
+		title: "detect bad peers: filter_hash_mismatch",
+		level: score.Should,
+	}, {
+		id:    "bip157.malformed_gcs_filter_payload",
+		title: "malformed GCS filter payload is rejected or punished",
+		level: score.Should,
+	}})
+}
+
+func runBadCFilterAtHeightAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture, height uint32, specs []resultSpec) ([]score.Result, error) {
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
-		CorruptCFilters: map[uint32]bool{2: true},
+		CorruptCFilters: map[uint32]bool{height: true},
 	}))
 	if err := bad.Start("127.0.0.1:0"); err != nil {
 		return nil, err
@@ -967,35 +1224,13 @@ func runBadCFilterAdapter(ctx context.Context, opts Options, fixture *chainlab.F
 		return nil, fmt.Errorf("list peers: %w", err)
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-cfilter", bad, "cfilter"); ok {
-		return badCFilterResults(score.Pass, evidence), nil
+		return resultsFromSpecs(specs, score.Pass, evidence), nil
 	}
 	evidence := "bad-cfilter was not punished after serving a corrupt filter"
 	if waitErr != nil {
 		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-cfilter", bad))
 	}
-	return badCFilterResults(score.Fail, evidence), nil
-}
-
-func badCFilterResults(status score.Status, evidence string) []score.Result {
-	return []score.Result{{
-		ID:       "bip157.direct_bad_cfilter_ban",
-		Title:    "bad direct cfilter response is punished",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}, {
-		ID:       "neutrino.detect_bad_peers.filter_hash_mismatch",
-		Title:    "detect bad peers: filter_hash_mismatch",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}, {
-		ID:       "bip157.malformed_gcs_filter_payload",
-		Title:    "malformed GCS filter payload is rejected or punished",
-		Level:    score.Should,
-		Status:   status,
-		Evidence: evidence,
-	}}
+	return resultsFromSpecs(specs, score.Fail, evidence), nil
 }
 
 func runWrongCFilterBlockHashAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {

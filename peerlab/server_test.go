@@ -134,6 +134,37 @@ func TestServerCanCorruptCFHeaders(t *testing.T) {
 	}
 }
 
+func TestServerCanCorruptBlockHeaders(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptHeaders: map[uint32]bool{2: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	getHeaders := wire.NewMsgGetHeaders()
+	genesis := fixture.Blocks[0].Block.BlockHash()
+	_ = getHeaders.AddBlockLocatorHash(&genesis)
+	if err := wire.WriteMessage(conn, getHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getheaders: %v", err)
+	}
+	headers := readMessageOf[*wire.MsgHeaders](t, conn, fixture)
+	if *headers.Headers[0] != fixture.Blocks[1].Block.Header {
+		t.Fatalf("height 1 header should stay honest")
+	}
+	if headers.Headers[1].PrevBlock == fixture.Blocks[2].Block.Header.PrevBlock {
+		t.Fatalf("height 2 previous block hash was not corrupted")
+	}
+}
+
 func TestServerCanCorruptPrevFilterHeader(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {

@@ -32,6 +32,7 @@ type TranscriptEntry struct {
 // Behavior describes deterministic faults a scenario wants the peer to inject.
 // Height maps use block heights from the fixture, not p2p message indexes.
 type Behavior struct {
+	CorruptHeaders          map[uint32]bool
 	CorruptCFHeaders        map[uint32]bool
 	CorruptCFCheckpts       map[uint32]bool
 	CorruptCFilters         map[uint32]bool
@@ -238,6 +239,9 @@ func (s *Server) headersResponse(req *wire.MsgGetHeaders) *wire.MsgHeaders {
 	resp := wire.NewMsgHeaders()
 	for i := start; i < len(s.fixture.Blocks); i++ {
 		header := s.fixture.Blocks[i].Block.Header
+		if s.behavior.CorruptHeaders[uint32(i)] {
+			header.PrevBlock = corruptHash(header.PrevBlock)
+		}
 		_ = resp.AddBlockHeader(&header)
 		if req.HashStop == s.fixture.Blocks[i].Block.BlockHash() {
 			break
@@ -437,6 +441,7 @@ func corruptBlock(block *wire.MsgBlock) *wire.MsgBlock {
 
 func cloneBehavior(behavior Behavior) Behavior {
 	return Behavior{
+		CorruptHeaders:          cloneBoolMap(behavior.CorruptHeaders),
 		CorruptCFHeaders:        cloneBoolMap(behavior.CorruptCFHeaders),
 		CorruptCFCheckpts:       cloneBoolMap(behavior.CorruptCFCheckpts),
 		CorruptCFilters:         cloneBoolMap(behavior.CorruptCFilters),

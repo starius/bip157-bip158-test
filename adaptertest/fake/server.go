@@ -234,6 +234,7 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 func fakeAdversarialPeer(id string) bool {
 	return strings.Contains(id, "liar") ||
 		strings.Contains(id, "bad") ||
+		strings.Contains(id, "scrambled") ||
 		strings.Contains(id, "unresponsive")
 }
 
