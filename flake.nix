@@ -15,7 +15,7 @@
         in
         {
           default = pkgs.mkShell {
-            packages = [
+            buildInputs = [
               pkgs.bitcoind
               pkgs.cargo
               pkgs.dotnet-sdk_10
