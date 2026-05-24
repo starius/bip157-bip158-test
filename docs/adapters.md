@@ -110,7 +110,7 @@ transcript proves the bad BIP157 response was actually served.
 ### Wasabi
 
 ```sh
-src=$(./adapters/wasabi/prepare-source.sh /tmp/wasabi-src)
+src=$(./adapters/wasabi/prepare-source.sh adapters/wasabi/.wasabi-src)
 export WASABI_PATCHED_SOURCE="$src"
 dotnet test adapters/wasabi.Tests/WasabiAdapter.Tests.csproj
 dotnet build adapters/wasabi/WasabiAdapter.csproj

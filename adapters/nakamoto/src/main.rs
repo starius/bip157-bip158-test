@@ -562,11 +562,11 @@ mod tests {
     fn data_root_uses_configured_directory() {
         let req = ConfigureRequest {
             network: "regtest".into(),
-            data_dir: "/tmp/nakamoto-suite".into(),
+            data_dir: "nakamoto-suite".into(),
             peers: Vec::new(),
             required_peers: 1,
             allow_discovery: false,
         };
-        assert_eq!(data_root(&req), PathBuf::from("/tmp/nakamoto-suite"));
+        assert_eq!(data_root(&req), PathBuf::from("nakamoto-suite"));
     }
 }
