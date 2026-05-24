@@ -4,6 +4,12 @@ The suite treats every BIP157/BIP158 implementation as a black-box HTTP
 adapter. The canonical schema is in `proto/bip157test.proto`; the current
 transport is HTTP JSON with the same field names.
 
+The harness now passes an explicit `environment` object to `/configure` and
+annotates each peer with `address_type`, `transport`, optional `proxy_address`,
+and a peer `identity`. Older adapters may ignore these fields. New adapters
+should implement `/capabilities` so the harness can distinguish unsupported
+address environments from BIP157/BIP158 failures.
+
 ## Required Endpoints
 
 All endpoints use `POST`.
@@ -11,6 +17,7 @@ All endpoints use `POST`.
 | Endpoint | Purpose |
 | --- | --- |
 | `/configure` | Reset the adapter for one isolated regtest run and provide harness-controlled peers. |
+| `/capabilities` | Optionally report supported address environments. |
 | `/start` | Start networking and syncing. |
 | `/stop` | Stop networking and release resources. |
 | `/watch-script` | Track a scriptPubKey from a start height. |
@@ -25,6 +32,7 @@ Adapters should listen on `127.0.0.1:0` by default and print
 
 ```sh
 go run ./cmd/bip157-harness --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/adapter"
+go run ./cmd/bip157-harness --environment ipv6 --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/adapter"
 ```
 
 ## Writing a New Adapter
@@ -43,6 +51,8 @@ go run ./cmd/bip157-harness --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/ada
    disconnected, and banned peers.
 6. Keep adapter state isolated by `data_dir`. The harness will reuse the same
    adapter process across scenarios and call `/configure` between them.
+7. Implement `/capabilities` when the adapter supports more than clear IPv4.
+   Missing capabilities default to IPv4-only support.
 
 ## Included Adapters
 

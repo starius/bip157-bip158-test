@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "chutney-src": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779202645,
+        "narHash": "sha256-jndz5l247MOAw2leFHOj7sEMikNn+3bme+N7uCzGyYI=",
+        "ref": "refs/heads/main",
+        "rev": "3c757c2b9d14e8d72e4bf2e65ce2cd08f86380b9",
+        "revCount": 1340,
+        "type": "git",
+        "url": "https://gitlab.torproject.org/tpo/core/chutney.git"
+      },
+      "original": {
+        "rev": "3c757c2b9d14e8d72e4bf2e65ce2cd08f86380b9",
+        "type": "git",
+        "url": "https://gitlab.torproject.org/tpo/core/chutney.git"
+      }
+    },
     "kyoto-src": {
       "flake": false,
       "locked": {
@@ -69,6 +86,7 @@
     },
     "root": {
       "inputs": {
+        "chutney-src": "chutney-src",
         "kyoto-src": "kyoto-src",
         "nakamoto-src": "nakamoto-src",
         "neutrino-src": "neutrino-src",

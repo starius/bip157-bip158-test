@@ -18,8 +18,12 @@
     url = "github:WalletWasabi/WalletWasabi/3660452fa4655b8af0bedd33ceb44948d53ee660";
     flake = false;
   };
+  inputs.chutney-src = {
+    url = "git+https://gitlab.torproject.org/tpo/core/chutney.git?rev=3c757c2b9d14e8d72e4bf2e65ce2cd08f86380b9";
+    flake = false;
+  };
 
-  outputs = { self, nixpkgs, kyoto-src, neutrino-src, nakamoto-src, wasabi-src }:
+  outputs = { self, nixpkgs, kyoto-src, neutrino-src, nakamoto-src, wasabi-src, chutney-src }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -34,20 +38,26 @@
             buildInputs = [
               pkgs.bitcoind
               pkgs.cargo
+              pkgs.cjdns
               pkgs.dotnet-sdk_10
               pkgs.go
               pkgs.gotestsum
+              pkgs.i2p
+              pkgs.i2pd
               pkgs.iproute2
               pkgs.jq
               pkgs.just
+              pkgs.openjdk_headless
               pkgs.protobuf
               pkgs.rustc
+              pkgs.tor
             ];
             shellHook = ''
               export KYOTO_SOURCE=${kyoto-src}
               export NEUTRINO_SOURCE=${neutrino-src}
               export NAKAMOTO_SOURCE=${nakamoto-src}
               export WASABI_SOURCE=${wasabi-src}
+              export CHUTNEY_SOURCE=${chutney-src}
               export WASABI_P2P_PATCH=$PWD/nix/patches/wasabi/0001-p2p-compact-filter-provider.patch
             '';
           };
