@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bip157-bip158-test/suite/addresslab"
 	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
 	"github.com/bip157-bip158-test/suite/environment"
@@ -24,8 +25,11 @@ type Options struct {
 	AdapterURL   string
 	DataDir      string
 	Environment  string
+	AddressLab   string
 	ProxyAddress string
 	Timeout      time.Duration
+
+	addressAllocator addresslab.Allocator
 }
 
 type adapterScenario struct {
@@ -53,6 +57,12 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	if err != nil {
 		return score.Summary{}, err
 	}
+	allocator, err := addresslab.New(opts.AddressLab)
+	if err != nil {
+		return score.Summary{}, err
+	}
+	defer allocator.Close()
+	opts.addressAllocator = allocator
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
 		return score.Summary{}, err
@@ -60,7 +70,7 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 
 	results := catalogAsSkipped()
 	upsert(&results, runBIP158Internal(fixture)...)
-	upsert(&results, peerIdentityResults(env, fixture)...)
+	upsert(&results, peerIdentityResults(env, fixture, opts.addressAllocator)...)
 
 	if opts.AdapterURL != "" {
 		longFixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
@@ -559,15 +569,15 @@ func resultsFromSpecs(specs []resultSpec, status score.Status, evidence string) 
 	return results
 }
 
-func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture) []score.Result {
+func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture, allocator addresslab.Allocator) []score.Result {
 	switch env.ID {
 	case environment.IPv4:
-		first := peerlab.NewServer(fixture)
+		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
 		if _, err := first.StartInEnvironment(env, 1); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
 		}
 		defer first.Stop()
-		second := peerlab.NewServer(fixture)
+		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
 		if _, err := second.StartInEnvironment(env, 2); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
 		}
@@ -579,12 +589,12 @@ func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture) 
 		}
 		return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Unsupported, "host only allowed shared IPv4 loopback identity")}
 	case environment.IPv6:
-		first := peerlab.NewServer(fixture)
+		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
 		if _, err := first.StartInEnvironment(env, 1); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
 		}
 		defer first.Stop()
-		second := peerlab.NewServer(fixture)
+		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
 		if _, err := second.StartInEnvironment(env, 2); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
 		}
@@ -1635,6 +1645,7 @@ func configureAndStart(ctx context.Context, client *api.Client, opts Options, pe
 		return err
 	}
 	apiEnv := api.EnvironmentFromDefinition(env)
+	apiEnv.DistinctPeerIdentities = hasDistinctPeerIdentities(env, opts.addressAllocator)
 	apiEnv.ProxyAddress = opts.ProxyAddress
 	enriched, err := enrichPeerConfigs(opts, peers)
 	if err != nil {
@@ -1657,10 +1668,31 @@ func configureAndStart(ctx context.Context, client *api.Client, opts Options, pe
 	return nil
 }
 
+func hasDistinctPeerIdentities(env environment.Definition, allocator addresslab.Allocator) bool {
+	if !env.IsClearTCP() {
+		return env.DistinctPeerIdentities
+	}
+	if allocator == nil {
+		allocator = addresslab.NewLoopback()
+	}
+	caps := allocator.Capabilities()
+	switch env.ID {
+	case environment.IPv4:
+		return caps.DistinctIPv4Identities
+	case environment.IPv6:
+		return caps.DistinctIPv6Identities
+	default:
+		return env.DistinctPeerIdentities
+	}
+}
+
 func startInSelectedEnvironment(opts Options, server *peerlab.Server, index int) error {
 	env, err := environment.Lookup(opts.Environment)
 	if err != nil {
 		return err
+	}
+	if opts.addressAllocator != nil {
+		server.SetAddressAllocator(opts.addressAllocator)
 	}
 	_, err = server.StartInEnvironment(env, index)
 	return err

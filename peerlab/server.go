@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bip157-bip158-test/suite/addresslab"
 	"github.com/bip157-bip158-test/suite/chainlab"
 	"github.com/bip157-bip158-test/suite/environment"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -59,6 +60,15 @@ type Behavior struct {
 // Option customizes a peer simulator.
 type Option func(*Server)
 
+// WithAddressAllocator selects the local address allocator used by
+// StartInEnvironment. Tests that need distinct IPv6 identities can pass a
+// privileged allocator while ordinary runs keep the loopback fallback.
+func WithAddressAllocator(allocator addresslab.Allocator) Option {
+	return func(s *Server) {
+		s.addressAllocator = allocator
+	}
+}
+
 // WithBehavior makes the peer inject deterministic faults into otherwise
 // normal BIP157 responses.
 func WithBehavior(behavior Behavior) Option {
@@ -76,9 +86,12 @@ type Server struct {
 	listener net.Listener
 	done     chan struct{}
 	identity Identity
+	lease    addresslab.Lease
 
 	mu         sync.Mutex
 	transcript []TranscriptEntry
+
+	addressAllocator addresslab.Allocator
 }
 
 // NewServer returns a peer simulator for fixture.
@@ -92,6 +105,11 @@ func NewServer(fixture *chainlab.Fixture, opts ...Option) *Server {
 		opt(server)
 	}
 	return server
+}
+
+// SetAddressAllocator replaces the allocator used by StartInEnvironment.
+func (s *Server) SetAddressAllocator(allocator addresslab.Allocator) {
+	s.addressAllocator = allocator
 }
 
 // Start begins listening on addr. Use "127.0.0.1:0" to allocate a free port.
@@ -118,43 +136,47 @@ func (s *Server) Start(addr string) error {
 
 // StartInEnvironment begins listening with an address chosen for env.
 //
-// The index is one-based within a scenario. IPv4 uses separate 127/8 loopback
-// addresses so peers have different IP identities. IPv6 loopback has only ::1
-// on ordinary hosts, so it records the correct family but not distinct IPs
-// unless the caller supplies a lab that creates extra IPv6 identities.
+// The index is one-based within a scenario. The selected address allocator
+// decides whether an environment provides distinct peer identities. The
+// default allocator gives IPv4 distinct 127/8 hosts and uses shared ::1 for
+// non-privileged IPv6 runs.
 func (s *Server) StartInEnvironment(env environment.Definition, index int) (Identity, error) {
 	if !env.IsClearTCP() {
 		return Identity{}, fmt.Errorf("%s requires an overlay lab", env.ID)
 	}
-	if index < 1 {
-		return Identity{}, fmt.Errorf("peer index must be positive")
+	allocator := s.addressAllocator
+	if allocator == nil {
+		allocator = addresslab.NewLoopback()
 	}
-
-	host := "127.0.0.1"
-	distinct := false
-	if env.ID == environment.IPv4 {
-		host = fmt.Sprintf("127.27.0.%d", index)
-		distinct = true
-	} else if env.ID == environment.IPv6 {
-		host = "::1"
+	lease, err := allocator.Allocate(env, index)
+	if err != nil {
+		return Identity{}, err
 	}
+	s.lease = lease
 
-	if err := s.Start(net.JoinHostPort(host, "0")); err != nil {
+	if err := s.Start(net.JoinHostPort(lease.Host, "0")); err != nil {
 		if env.ID != environment.IPv4 {
+			_ = releaseLease(lease)
 			return Identity{}, err
 		}
-		host = "127.0.0.1"
-		distinct = false
-		if fallbackErr := s.Start(net.JoinHostPort(host, "0")); fallbackErr != nil {
+		_ = releaseLease(lease)
+		fallback := addresslab.Lease{
+			ID:       fmt.Sprintf("%s-peer-%d", env.ID, index),
+			Host:     "127.0.0.1",
+			Distinct: false,
+		}
+		if fallbackErr := s.Start(net.JoinHostPort(fallback.Host, "0")); fallbackErr != nil {
 			return Identity{}, err
 		}
+		s.lease = fallback
+		lease = fallback
 	}
 
 	identity := s.identity
-	identity.ID = fmt.Sprintf("%s-peer-%d", env.ID, index)
+	identity.ID = lease.ID
 	identity.AddressType = env.AddressType
 	identity.Transport = env.Transport
-	identity.Distinct = distinct
+	identity.Distinct = lease.Distinct
 	s.identity = identity
 	return identity, nil
 }
@@ -163,10 +185,21 @@ func (s *Server) StartInEnvironment(env environment.Definition, index int) (Iden
 // when their next read or write fails.
 func (s *Server) Stop() error {
 	close(s.done)
+	var err error
 	if s.listener != nil {
-		return s.listener.Close()
+		err = s.listener.Close()
 	}
-	return nil
+	if leaseErr := releaseLease(s.lease); leaseErr != nil && err == nil {
+		err = leaseErr
+	}
+	return err
+}
+
+func releaseLease(lease addresslab.Lease) error {
+	if lease.Release == nil {
+		return nil
+	}
+	return lease.Release()
 }
 
 // Addr returns the listener address.

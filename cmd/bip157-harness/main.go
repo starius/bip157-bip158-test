@@ -13,12 +13,14 @@ import (
 
 func main() {
 	var adapterURL string
+	var addressLab string
 	var dataDir string
 	var environmentID string
 	var outDir string
 	var proxyAddress string
 	var timeout time.Duration
 	flag.StringVar(&adapterURL, "adapter-url", "", "base URL of the implementation adapter")
+	flag.StringVar(&addressLab, "address-lab", "loopback", "address allocator: loopback, auto, or linux-iproute")
 	flag.StringVar(&dataDir, "data-dir", "", "adapter data directory")
 	flag.StringVar(&environmentID, "environment", "ipv4", "test environment: ipv4, ipv6, tor-v3, i2p, or cjdns")
 	flag.StringVar(&outDir, "out", "run-artifacts/latest", "directory for reports")
@@ -28,6 +30,7 @@ func main() {
 
 	summary, err := harness.Run(context.Background(), harness.Options{
 		AdapterURL:   adapterURL,
+		AddressLab:   addressLab,
 		DataDir:      dataDir,
 		Environment:  environmentID,
 		ProxyAddress: proxyAddress,

@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bip157-bip158-test/suite/addresslab"
 	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/environment"
 	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/score"
 )
@@ -41,6 +43,29 @@ func TestRunRejectsUnknownEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnknownAddressLab(t *testing.T) {
+	_, err := Run(context.Background(), Options{AddressLab: "bogus"})
+	if err == nil {
+		t.Fatalf("unknown address lab unexpectedly succeeded")
+	}
+}
+
+func TestDistinctIdentityCapabilityFollowsAllocator(t *testing.T) {
+	ipv6, err := environment.Lookup("ipv6")
+	if err != nil {
+		t.Fatalf("lookup ipv6: %v", err)
+	}
+	if hasDistinctPeerIdentities(ipv6, addresslab.NewLoopback()) {
+		t.Fatalf("loopback ipv6 should not claim distinct identities")
+	}
+	linux := addresslab.NewLinuxIPRoute(addresslab.LinuxIPRouteOptions{
+		Command: &recordingAddressRunner{},
+	})
+	if !hasDistinctPeerIdentities(ipv6, linux) {
+		t.Fatalf("linux-iproute ipv6 should claim distinct identities")
+	}
+}
+
 func TestWaitForAdapterTipTimesOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
@@ -62,6 +87,10 @@ func TestWaitForMatchesTimesOut(t *testing.T) {
 type nilClient struct{}
 
 func (nilClient) PostJSON(context.Context, string, any, any) error { return context.DeadlineExceeded }
+
+type recordingAddressRunner struct{}
+
+func (*recordingAddressRunner) Run(string, ...string) error { return nil }
 
 func TestTranscriptSummaryHandlesEmptyTranscript(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
