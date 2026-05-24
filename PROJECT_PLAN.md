@@ -67,7 +67,21 @@ Tasks:
 3. Patch adapter-owned bugs directly in this repo.
 4. Carry library fixes as local patches with commit-message-quality explainers
    suitable for upstream PRs.
-5. Record cases that remain blocked after reasonable debugging in
+5. Add empirical bad-peer checks so the suite is not limited to adapter
+   reported `banned` fields:
+   - `peer.bad_data_rejected`: after a provably bad `cfheaders`, `cfcheckpt`,
+     `cfilter`, or block response, the client must not accept or persist the
+     bad data and must recover through valid data.
+   - `peer.effective_ban_reconnect`: after a peer serves provably bad data,
+     keep the same peer available and trigger a follow-up request. The client
+     fails this row if it reconnects to that peer and requests or accepts BIP157
+     data from it again within the test window.
+6. Add peerlab support for distinct peer identities at the IP level. The
+   current suite binds every peer to `127.0.0.1:0`, so peers have distinct
+   ports but the same IP. Effective-ban scenarios need separate loopback IPs,
+   network namespaces, or an explicit fallback mode that marks IP-level ban
+   assertions unsupported when only one loopback address is available.
+7. Record cases that remain blocked after reasonable debugging in
    `VALIDATION_REPORT.md` and `BIP157_BIP158_FINDINGS.md`.
 
 Backend-specific next probes:
@@ -171,6 +185,8 @@ Scenario IDs:
 
 - `bip157.disagreement_interrogation_matrix`
 - `peer.bad_data_vs_race_false_ban`
+- `peer.bad_data_rejected`
+- `peer.effective_ban_reconnect`
 - `network.followup_nonresponse_not_bad_data`
 - `bip157.stop_hash_known_by_peer`
 - `bip157.getcfilters_partial_progress_retry`
