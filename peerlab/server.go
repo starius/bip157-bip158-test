@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/environment"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -27,6 +28,16 @@ type TranscriptEntry struct {
 	Dir     string
 	Command string
 	Summary string
+}
+
+// Identity records how the harness exposed one simulated peer to an adapter.
+type Identity struct {
+	ID                string
+	ListenAddress     string
+	AdvertisedAddress string
+	AddressType       environment.AddressType
+	Transport         environment.Transport
+	Distinct          bool
 }
 
 // Behavior describes deterministic faults a scenario wants the peer to inject.
@@ -64,6 +75,7 @@ type Server struct {
 
 	listener net.Listener
 	done     chan struct{}
+	identity Identity
 
 	mu         sync.Mutex
 	transcript []TranscriptEntry
@@ -88,9 +100,63 @@ func (s *Server) Start(addr string) error {
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
+	host, _, splitErr := net.SplitHostPort(ln.Addr().String())
+	if splitErr != nil {
+		host = ln.Addr().String()
+	}
 	s.listener = ln
+	s.identity = Identity{
+		ListenAddress:     ln.Addr().String(),
+		AdvertisedAddress: ln.Addr().String(),
+		AddressType:       addressTypeForHost(host),
+		Transport:         environment.TransportTCP,
+		Distinct:          false,
+	}
 	go s.acceptLoop()
 	return nil
+}
+
+// StartInEnvironment begins listening with an address chosen for env.
+//
+// The index is one-based within a scenario. IPv4 uses separate 127/8 loopback
+// addresses so peers have different IP identities. IPv6 loopback has only ::1
+// on ordinary hosts, so it records the correct family but not distinct IPs
+// unless the caller supplies a lab that creates extra IPv6 identities.
+func (s *Server) StartInEnvironment(env environment.Definition, index int) (Identity, error) {
+	if !env.IsClearTCP() {
+		return Identity{}, fmt.Errorf("%s requires an overlay lab", env.ID)
+	}
+	if index < 1 {
+		return Identity{}, fmt.Errorf("peer index must be positive")
+	}
+
+	host := "127.0.0.1"
+	distinct := false
+	if env.ID == environment.IPv4 {
+		host = fmt.Sprintf("127.27.0.%d", index)
+		distinct = true
+	} else if env.ID == environment.IPv6 {
+		host = "::1"
+	}
+
+	if err := s.Start(net.JoinHostPort(host, "0")); err != nil {
+		if env.ID != environment.IPv4 {
+			return Identity{}, err
+		}
+		host = "127.0.0.1"
+		distinct = false
+		if fallbackErr := s.Start(net.JoinHostPort(host, "0")); fallbackErr != nil {
+			return Identity{}, err
+		}
+	}
+
+	identity := s.identity
+	identity.ID = fmt.Sprintf("%s-peer-%d", env.ID, index)
+	identity.AddressType = env.AddressType
+	identity.Transport = env.Transport
+	identity.Distinct = distinct
+	s.identity = identity
+	return identity, nil
 }
 
 // Stop closes the listener and all future accepts. Existing connections exit
@@ -109,6 +175,11 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.listener.Addr().String()
+}
+
+// Identity returns the environment metadata for this peer listener.
+func (s *Server) Identity() Identity {
+	return s.identity
 }
 
 // Transcript returns a stable copy of the P2P transcript.
@@ -378,6 +449,13 @@ func netAddresses(conn net.Conn) (*wire.NetAddress, *wire.NetAddress) {
 	remote := tcpAddr(conn.RemoteAddr())
 	return wire.NewNetAddress(local, wire.SFNodeNetwork|wire.SFNodeWitness|wire.SFNodeCF),
 		wire.NewNetAddress(remote, wire.SFNodeNetwork|wire.SFNodeWitness|wire.SFNodeCF)
+}
+
+func addressTypeForHost(host string) environment.AddressType {
+	if strings.Contains(host, ":") {
+		return environment.AddressIPv6
+	}
+	return environment.AddressIPv4
 }
 
 func tcpAddr(addr net.Addr) *net.TCPAddr {

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/environment"
 	"github.com/btcsuite/btcd/wire"
 )
 
@@ -59,6 +60,87 @@ func TestServerServesHeadersAndFilters(t *testing.T) {
 		if len(filter.Data) == 0 {
 			t.Fatalf("filter %d was empty", i)
 		}
+	}
+}
+
+func TestServerStartsWithDistinctIPv4Identities(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	env, err := environment.Lookup("ipv4")
+	if err != nil {
+		t.Fatalf("lookup ipv4: %v", err)
+	}
+
+	first := NewServer(fixture)
+	if _, err := first.StartInEnvironment(env, 1); err != nil {
+		t.Fatalf("start first peer: %v", err)
+	}
+	defer first.Stop()
+	second := NewServer(fixture)
+	if _, err := second.StartInEnvironment(env, 2); err != nil {
+		t.Fatalf("start second peer: %v", err)
+	}
+	defer second.Stop()
+
+	firstHost, _, err := net.SplitHostPort(first.Addr())
+	if err != nil {
+		t.Fatalf("split first addr: %v", err)
+	}
+	secondHost, _, err := net.SplitHostPort(second.Addr())
+	if err != nil {
+		t.Fatalf("split second addr: %v", err)
+	}
+	if firstHost == secondHost {
+		t.Fatalf("ipv4 peers share host identity %s", firstHost)
+	}
+	if !first.Identity().Distinct || !second.Identity().Distinct {
+		t.Fatalf("ipv4 identities should be marked distinct")
+	}
+}
+
+func TestServerStartsWithIPv6FamilyMetadata(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	env, err := environment.Lookup("ipv6")
+	if err != nil {
+		t.Fatalf("lookup ipv6: %v", err)
+	}
+
+	server := NewServer(fixture)
+	if _, err := server.StartInEnvironment(env, 1); err != nil {
+		t.Fatalf("start ipv6 peer: %v", err)
+	}
+	defer server.Stop()
+
+	host, _, err := net.SplitHostPort(server.Addr())
+	if err != nil {
+		t.Fatalf("split addr: %v", err)
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.To4() != nil {
+		t.Fatalf("server did not bind an ipv6 host: %q", host)
+	}
+	if server.Identity().AddressType != environment.AddressIPv6 {
+		t.Fatalf("identity address type = %s", server.Identity().AddressType)
+	}
+}
+
+func TestServerRejectsOverlayWithoutLab(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	env, err := environment.Lookup("tor-v3")
+	if err != nil {
+		t.Fatalf("lookup tor-v3: %v", err)
+	}
+
+	server := NewServer(fixture)
+	if _, err := server.StartInEnvironment(env, 1); err == nil {
+		t.Fatalf("overlay start unexpectedly succeeded without a lab")
 	}
 }
 
