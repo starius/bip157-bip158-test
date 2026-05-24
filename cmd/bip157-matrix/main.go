@@ -20,16 +20,29 @@ func (r *runFlags) String() string {
 func (r *runFlags) Set(value string) error {
 	name, dir, ok := strings.Cut(value, "=")
 	if !ok || name == "" || dir == "" {
-		return fmt.Errorf("run must be name=dir")
+		return fmt.Errorf("run must be name[@environment]=dir")
 	}
-	*r = append(*r, matrix.Run{Implementation: name, Dir: dir})
+	implementation := name
+	environment := ""
+	if before, after, ok := strings.Cut(name, "@"); ok {
+		implementation = before
+		environment = after
+	}
+	if implementation == "" {
+		return fmt.Errorf("implementation name is empty")
+	}
+	*r = append(*r, matrix.Run{
+		Implementation: implementation,
+		Environment:    environment,
+		Dir:            dir,
+	})
 	return nil
 }
 
 func main() {
 	var runs runFlags
 	var out string
-	flag.Var(&runs, "run", "implementation=report-dir containing run.json; repeatable")
+	flag.Var(&runs, "run", "implementation[@environment]=report-dir containing run.json; repeatable")
 	flag.StringVar(&out, "out", "", "directory for matrix.md and matrix.json")
 	flag.Parse()
 

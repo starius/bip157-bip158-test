@@ -17,19 +17,30 @@ import (
 // Run identifies one implementation report directory.
 type Run struct {
 	Implementation string
+	Environment    string
 	Dir            string
 }
 
 // Table is the normalized matrix used for Markdown and JSON output.
 type Table struct {
 	Implementations []string   `json:"implementations"`
+	Columns         []Column   `json:"columns"`
 	Rows            []Row      `json:"rows"`
 	Colors          []RunColor `json:"colors"`
+}
+
+// Column identifies one implementation/environment run in the matrix.
+type Column struct {
+	Implementation string `json:"implementation"`
+	Environment    string `json:"environment,omitempty"`
+	Label          string `json:"label"`
 }
 
 // RunColor records one implementation's aggregate conformance color.
 type RunColor struct {
 	Implementation string      `json:"implementation"`
+	Environment    string      `json:"environment,omitempty"`
+	Label          string      `json:"label"`
 	Color          score.Color `json:"color"`
 }
 
@@ -70,19 +81,28 @@ func Load(runs []Run) (Table, error) {
 
 	table := Table{
 		Implementations: make([]string, 0, len(runs)),
+		Columns:         make([]Column, 0, len(runs)),
 		Colors:          make([]RunColor, 0, len(runs)),
 	}
 	for _, run := range runs {
 		if run.Implementation == "" {
 			return Table{}, fmt.Errorf("implementation name is empty")
 		}
+		label := runLabel(run)
 		summary, err := readSummary(filepath.Join(run.Dir, "run.json"))
 		if err != nil {
-			return Table{}, fmt.Errorf("%s: %w", run.Implementation, err)
+			return Table{}, fmt.Errorf("%s: %w", label, err)
 		}
-		table.Implementations = append(table.Implementations, run.Implementation)
+		table.Implementations = append(table.Implementations, label)
+		table.Columns = append(table.Columns, Column{
+			Implementation: run.Implementation,
+			Environment:    run.Environment,
+			Label:          label,
+		})
 		table.Colors = append(table.Colors, RunColor{
 			Implementation: run.Implementation,
+			Environment:    run.Environment,
+			Label:          label,
 			Color:          summary.Color,
 		})
 		for _, result := range summary.Results {
@@ -101,7 +121,7 @@ func Load(runs []Run) (Table, error) {
 			if row.Level == "" {
 				row.Level = result.Level
 			}
-			row.Results[run.Implementation] = Implementation{
+			row.Results[label] = Implementation{
 				Status:   result.Status,
 				Evidence: result.Evidence,
 			}
@@ -124,10 +144,10 @@ func Markdown(table Table) string {
 	var b strings.Builder
 	b.WriteString("# BIP157/BIP158 Implementation Matrix\n\n")
 	if len(table.Colors) > 0 {
-		b.WriteString("| Implementation | Overall |\n")
+		b.WriteString("| Run | Overall |\n")
 		b.WriteString("| --- | --- |\n")
 		for _, color := range table.Colors {
-			b.WriteString("| `" + escape(color.Implementation) + "` | `" + string(color.Color) + "` |\n")
+			b.WriteString("| `" + escape(color.Label) + "` | `" + string(color.Color) + "` |\n")
 		}
 		b.WriteString("\n")
 	}
@@ -173,6 +193,13 @@ func Write(dir string, table Table) error {
 		return fmt.Errorf("write matrix json: %w", err)
 	}
 	return nil
+}
+
+func runLabel(run Run) string {
+	if run.Environment == "" {
+		return run.Implementation
+	}
+	return run.Implementation + "@" + run.Environment
 }
 
 func readSummary(path string) (score.Summary, error) {

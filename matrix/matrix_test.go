@@ -31,8 +31,8 @@ func TestLoadAndMarkdown(t *testing.T) {
 	})
 
 	table, err := Load([]Run{
-		{Implementation: "impl-a", Dir: filepath.Join(dir, "a")},
-		{Implementation: "impl-b", Dir: filepath.Join(dir, "b")},
+		{Implementation: "impl-a", Environment: "ipv4", Dir: filepath.Join(dir, "a")},
+		{Implementation: "impl-b", Environment: "tor-v3", Dir: filepath.Join(dir, "b")},
 	})
 	if err != nil {
 		t.Fatalf("load matrix: %v", err)
@@ -40,10 +40,13 @@ func TestLoadAndMarkdown(t *testing.T) {
 	if len(table.Implementations) != 2 {
 		t.Fatalf("implementations = %d, want 2", len(table.Implementations))
 	}
+	if len(table.Columns) != 2 || table.Columns[0].Label != "impl-a@ipv4" {
+		t.Fatalf("unexpected columns: %+v", table.Columns)
+	}
 	md := Markdown(table)
 	for _, want := range []string{
-		"| `impl-a` | `green` |",
-		"| `impl-b` | `red` |",
+		"| `impl-a@ipv4` | `green` |",
+		"| `impl-b@tor-v3` | `red` |",
 		"`bip158.coinbase_output_included`",
 		"`MUST`",
 		"`pass`",
