@@ -61,6 +61,71 @@ func TestFakeAdapterReportsFixtureMatches(t *testing.T) {
 	}
 }
 
+func TestFakeAdapterReportsEnvironmentCapabilities(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	client := api.NewClient(server.URL)
+	var caps api.CapabilitiesResponse
+	if err := client.PostJSON(context.Background(), "/capabilities", map[string]string{}, &caps); err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	if len(caps.Environments) != 5 {
+		t.Fatalf("capabilities = %d, want 5", len(caps.Environments))
+	}
+	for _, cap := range caps.Environments {
+		if !cap.Supported {
+			t.Fatalf("fake adapter should support %s", cap.ID)
+		}
+	}
+}
+
+func TestFakeAdapterEchoesPeerEnvironmentMetadata(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	client := api.NewClient(server.URL)
+	if err := client.PostJSON(context.Background(), "/configure", api.ConfigureRequest{
+		Network: "regtest",
+		Environment: api.EnvironmentConfig{
+			ID:          "ipv6",
+			AddressType: "ipv6",
+			Transport:   "tcp",
+		},
+		Peers: []api.PeerConfig{{
+			ID:          "peer-a",
+			Address:     "[::1]:18444",
+			AddressType: "ipv6",
+			Transport:   "tcp",
+			Identity:    "::1",
+		}},
+	}, nil); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := client.PostJSON(context.Background(), "/start", map[string]string{}, nil); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(context.Background(), "/list-peers", map[string]string{}, &peers); err != nil {
+		t.Fatalf("list peers: %v", err)
+	}
+	if len(peers.Peers) != 1 {
+		t.Fatalf("peers = %d, want 1", len(peers.Peers))
+	}
+	if peers.Peers[0].AddressType != "ipv6" || peers.Peers[0].Identity != "::1" {
+		t.Fatalf("peer metadata not echoed: %+v", peers.Peers[0])
+	}
+}
+
 func TestFakeAdapterSuppressesMatchesForInvalidBlockScenario(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {

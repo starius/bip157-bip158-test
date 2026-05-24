@@ -40,6 +40,7 @@ func NewServer(fixture *chainlab.Fixture) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/capabilities", s.handleCapabilities)
 	mux.HandleFunc("/configure", s.handleConfigure)
 	mux.HandleFunc("/start", s.handleStart)
 	mux.HandleFunc("/stop", s.handleStop)
@@ -49,6 +50,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/matches", s.handleMatches)
 	mux.HandleFunc("/list-peers", s.handleListPeers)
 	return mux
+}
+
+func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	writeJSON(w, api.CapabilitiesResponse{Environments: []api.EnvironmentCapability{
+		{ID: "ipv4", Supported: true},
+		{ID: "ipv6", Supported: true},
+		{ID: "tor-v3", Supported: true},
+		{ID: "i2p", Supported: true},
+		{ID: "cjdns", Supported: true},
+	}})
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +235,9 @@ func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
 		states = append(states, api.PeerState{
 			ID:          peer.ID,
 			Address:     peer.Address,
+			AddressType: peer.AddressType,
+			Transport:   peer.Transport,
+			Identity:    peer.Identity,
 			Connected:   started && !adversarial,
 			Banned:      started && adversarial,
 			LastError:   fakePeerError(adversarial),

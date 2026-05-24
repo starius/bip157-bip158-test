@@ -8,6 +8,19 @@ message PeerConfig {
   string id = 1;
   string address = 2;
   bool trusted = 3;
+  string address_type = 4;
+  string transport = 5;
+  string identity = 6;
+  string proxy_address = 7;
+}
+
+message EnvironmentConfig {
+  string id = 1;
+  string address_type = 2;
+  string transport = 3;
+  bool requires_proxy = 4;
+  string proxy_address = 5;
+  bool distinct_peer_identities = 6;
 }
 
 message ConfigureRequest {
@@ -16,6 +29,7 @@ message ConfigureRequest {
   repeated PeerConfig peers = 3;
   uint32 required_peers = 4;
   bool allow_discovery = 5;
+  EnvironmentConfig environment = 6;
 }
 
 message BlockRef {
@@ -61,10 +75,23 @@ message PeerState {
   string last_error = 5;
   uint32 best_height = 6;
   string best_hash_hex = 7;
+  string address_type = 8;
+  string transport = 9;
+  string identity = 10;
 }
 
 message ListPeersResponse {
   repeated PeerState peers = 1;
+}
+
+message EnvironmentCapability {
+  string id = 1;
+  bool supported = 2;
+  string reason = 3;
+}
+
+message CapabilitiesResponse {
+  repeated EnvironmentCapability environments = 1;
 }
 
 message HealthResponse {
