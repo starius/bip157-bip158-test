@@ -80,3 +80,38 @@ cargo build --release
 The Kyoto adapter expects the Kyoto checkout at `../kyoto` relative to the suite
 root. It consumes `IndexedFilter` events, requests matching blocks through
 Kyoto, and records output/spend matches from those blocks.
+
+### Nakamoto
+
+```sh
+cd adapters/nakamoto
+cargo test
+cargo build --release
+./target/release/nakamoto-adapter --listen 127.0.0.1:0
+```
+
+The Nakamoto adapter expects the Nakamoto checkout at `../nakamoto` relative to
+the suite root. It runs Nakamoto in regtest mode, sets the harness-supplied
+peers as explicit `connect` peers, listens only on localhost, and records
+output/spend matches from blocks Nakamoto downloads after compact-filter
+matches.
+
+Nakamoto does not currently expose a durable ban list through the public handle.
+The adapter therefore reports a peer as non-banned but disconnected with an
+error when the peer is no longer connected. The harness treats that as enough
+evidence for SHOULD-level "reject or punish" cases only when the peerlab
+transcript proves the bad BIP157 response was actually served.
+
+### Wasabi
+
+Current Wasabi master is not included as a strict BIP157 P2P adapter. Its
+standard-filter synchronization path uses Bitcoin RPC filter calls, while this
+suite's strict adapter contract requires all needed block headers, compact
+filter headers, compact filters, and blocks to come from the Bitcoin P2P
+network without RPC, Electrum, esplora, or a Wasabi backend.
+
+The open P2P compact-filter PR branch can be evaluated as
+`wasabi-p2p-experimental` if it can be built and driven headlessly on regtest.
+Until that branch is stable enough to pin and run through the adapter API, it
+is documented as an experimental target rather than scored in the strict
+green/orange/red matrix.
