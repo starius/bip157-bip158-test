@@ -712,15 +712,16 @@ func runScrambledHeadersAdapter(ctx context.Context, opts Options, fixture *chai
 	defer cancel()
 	waitErr := waitForAdapterTip(probeCtx, client, tip.Block.BlockHash().String(), tip.Height)
 
-	var peers api.ListPeersResponse
-	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
-	}
 	specs := []resultSpec{{
 		id:    "neutrino.handle_headers.valid_then_scrambled",
 		title: "valid headers accepted and scrambled headers disconnected",
 		level: score.Must,
 	}}
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("scrambled-headers", bad))
+		return resultsFromSpecs(specs, score.Fail, evidence), nil
+	}
 	if ok, evidence := peerPunishedAfter(peers, "scrambled-headers", bad, "headers"); ok {
 		return resultsFromSpecs(specs, score.Pass, evidence), nil
 	}
@@ -927,7 +928,8 @@ func runFilterHeaderConflictAtHeightAdapter(ctx context.Context, opts Options, f
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s; %s", err, transcriptSummary("honest-cfheaders", honest), transcriptSummary("liar-cfheaders", liar))
+		return resultsFromSpecs(specs, score.Fail, evidence), nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "liar-cfheaders", liar, "cfheaders"); ok {
 		return resultsFromSpecs(specs, score.Pass, evidence), nil
@@ -976,7 +978,8 @@ func runBadCFCheckptWithCorruptionAdapter(ctx context.Context, opts Options, fix
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("bad-cfcheckpt", bad))
+		return resultsFromSpecs(specs, score.Fail, evidence), nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-cfcheckpt", bad, "cfcheckpt"); ok {
 		return resultsFromSpecs(specs, score.Pass, evidence), nil
@@ -1049,7 +1052,8 @@ func runBadPrevFilterHeaderWithSpecsAdapter(ctx context.Context, opts Options, f
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("bad-prev-filter-header", bad))
+		return resultsFromSpecs(specs, score.Fail, evidence), nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-prev-filter-header", bad, "cfheaders"); ok {
 		return resultsFromSpecs(specs, score.Pass, evidence), nil
@@ -1086,7 +1090,14 @@ func runEmptyCFHeadersAdapter(ctx context.Context, opts Options, fixture *chainl
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("bad-empty-cfheaders", bad))
+		return []score.Result{{
+			ID:       "bip157.empty_cfheaders_response",
+			Title:    "empty cfheaders response for a non-empty range is rejected or punished",
+			Level:    score.Should,
+			Status:   score.Fail,
+			Evidence: evidence,
+		}}, nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-empty-cfheaders", bad, "cfheaders"); ok {
 		return []score.Result{{
@@ -1145,7 +1156,14 @@ func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chain
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("bad-filter-type", bad))
+		return []score.Result{{
+			ID:       "bip157.wrong_filter_type_response",
+			Title:    "wrong filter type responses are rejected or punished",
+			Level:    score.Should,
+			Status:   score.Fail,
+			Evidence: evidence,
+		}}, nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-filter-type", bad, "cfheaders", "cfilter"); ok {
 		return []score.Result{{
@@ -1221,7 +1239,8 @@ func runBadCFilterAtHeightAdapter(ctx context.Context, opts Options, fixture *ch
 
 	var peers api.ListPeersResponse
 	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
-		return nil, fmt.Errorf("list peers: %w", err)
+		evidence := fmt.Sprintf("list peers: %v; %s", err, transcriptSummary("bad-cfilter", bad))
+		return resultsFromSpecs(specs, score.Fail, evidence), nil
 	}
 	if ok, evidence := peerPunishedAfter(peers, "bad-cfilter", bad, "cfilter"); ok {
 		return resultsFromSpecs(specs, score.Pass, evidence), nil
