@@ -393,7 +393,7 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 	}
 	matches, err := waitForMatches(waitCtx, client, matchReq, len(fixture.Matches))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("honest-a", server))
 	}
 
 	return []score.Result{{
