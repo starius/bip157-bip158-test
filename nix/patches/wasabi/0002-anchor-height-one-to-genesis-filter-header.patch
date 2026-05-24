@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: BIP157/BIP158 conformance suite
+Date: Sun, 24 May 2026 00:00:00 +0000
+Subject: [PATCH] wasabi: anchor height-one filters to genesis header
+
+BIP157 cfheaders responses include the filter header immediately before
+the requested range. For a range starting at height 1, that previous
+header is the genesis block filter header, not uint256.Zero.
+
+The P2P compact-filter PR initialized the local filter-header chain with
+the genesis filter, but still special-cased start height 1 to zero in
+both cfheaders validation and cfilter validation. That makes a conforming
+peer look malicious as soon as it answers the first getcfheaders request.
+
+Use zero only for a range that starts at height 0. All later ranges,
+including height 1, must use the locally stored previous filter header.
+
+---
+diff --git a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+index 40f4547..b953cb4 100644
+--- a/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
++++ b/WalletWasabi/BitcoinP2p/CompactFilterBehavior.cs
+@@ -230,9 +230,9 @@ public class CompactFilterBehavior(
+ 
+ 		// For the first filter, we need the previous filter header
+ 		// This comes from either the shared state (last emitted) or the filter header chain
+-		var prevFilterHeader = startHeight == 1
++		var prevFilterHeader = startHeight == 0
+ 			? uint256.Zero
+ 			: synchronizationState.GetExpectedFilterHeader(startHeight - 1);
+ 
+ 		if (prevFilterHeader is null)
+ 		{
+@@ -597,7 +597,7 @@ public class CompactFilterBehavior(
+ 
+ 		private bool TryGetPreviousFilterHeader(uint startHeight, [NotNullWhen(true)] out uint256? header)
+ 		{
+-			header = startHeight == 1
++			header = startHeight == 0
+ 				? uint256.Zero
+ 				: _filterHeaderChain[startHeight - 1]?.BlockFilterHeader;
+ 
