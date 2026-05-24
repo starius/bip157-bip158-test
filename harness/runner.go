@@ -108,6 +108,13 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				run:     runBadCFilterAdapter,
 			},
 			{
+				id:      "bip157.cfilter_block_hash_sequence_mismatch",
+				title:   "cfilter block-hash mismatch is rejected or punished",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runWrongCFilterBlockHashAdapter,
+			},
+			{
 				id:      "bip157.bad_cfcheckpt_response",
 				title:   "bad compact-filter checkpoint response is rejected or punished",
 				level:   score.Should,
@@ -122,6 +129,13 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				run:     runBadPrevFilterHeaderAdapter,
 			},
 			{
+				id:      "bip157.empty_cfheaders_response",
+				title:   "empty cfheaders response for a non-empty range is rejected or punished",
+				level:   score.Should,
+				fixture: longFixture,
+				run:     runEmptyCFHeadersAdapter,
+			},
+			{
 				id:      "bip157.wrong_filter_type_response",
 				title:   "wrong filter type responses are rejected or punished",
 				level:   score.Should,
@@ -134,6 +148,13 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 				level:   score.Should,
 				fixture: longFixture,
 				run:     runUnresponsivePeerAdapter,
+			},
+			{
+				id:      "blocks.invalid_downloaded_block_rejected",
+				title:   "invalid downloaded block is rejected",
+				level:   score.Must,
+				fixture: longFixture,
+				run:     runInvalidDownloadedBlockAdapter,
 			},
 			{
 				id:      "network.outage_filter_headers",
@@ -453,6 +474,12 @@ func runClientMethodsAdapter(ctx context.Context, opts Options, fixture *chainla
 		Level:    score.Should,
 		Status:   score.Pass,
 		Evidence: "adapter synced with discovery disabled and reported only the configured peer",
+	}, {
+		ID:       "network.restricted_connect_no_discovery",
+		Title:    "restricted explicit-peer mode avoids discovery",
+		Level:    score.Info,
+		Status:   score.Pass,
+		Evidence: "adapter ran with discovery disabled and exposed only the harness peer",
 	}}, nil
 }
 
@@ -467,6 +494,12 @@ func clientMethodFailure(evidence string) []score.Result {
 		ID:       "kyoto.whitelist_only_sync",
 		Title:    "whitelist-only peer selection",
 		Level:    score.Should,
+		Status:   score.Fail,
+		Evidence: evidence,
+	}, {
+		ID:       "network.restricted_connect_no_discovery",
+		Title:    "restricted explicit-peer mode avoids discovery",
+		Level:    score.Info,
 		Status:   score.Fail,
 		Evidence: evidence,
 	}}
@@ -787,6 +820,55 @@ func badPrevFilterHeaderResults(status score.Status, evidence string) []score.Re
 	}}
 }
 
+func runEmptyCFHeadersAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		EmptyCFHeaders: map[uint32]bool{0: true, 1: true, wire.CFCheckptInterval: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-empty-cfheaders",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunishedAfter(peers, "bad-empty-cfheaders", bad, "cfheaders"); ok {
+		return []score.Result{{
+			ID:       "bip157.empty_cfheaders_response",
+			Title:    "empty cfheaders response for a non-empty range is rejected or punished",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	evidence := "bad-empty-cfheaders was not punished after serving empty cfheaders"
+	if waitErr != nil {
+		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-empty-cfheaders", bad))
+	}
+	return []score.Result{{
+		ID:       "bip157.empty_cfheaders_response",
+		Title:    "empty cfheaders response for a non-empty range is rejected or punished",
+		Level:    score.Should,
+		Status:   score.Fail,
+		Evidence: evidence,
+	}}, nil
+}
+
 func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		WrongFilterType: map[string]wire.FilterType{
@@ -907,7 +989,143 @@ func badCFilterResults(status score.Status, evidence string) []score.Result {
 		Level:    score.Should,
 		Status:   status,
 		Evidence: evidence,
+	}, {
+		ID:       "bip157.malformed_gcs_filter_payload",
+		Title:    "malformed GCS filter payload is rejected or punished",
+		Level:    score.Should,
+		Status:   status,
+		Evidence: evidence,
 	}}
+}
+
+func runWrongCFilterBlockHashAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		WrongCFilterBlockHash: map[uint32]bool{2: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-cfilter-hash",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	if err := client.PostJSON(ctx, "/watch-script", api.WatchScriptRequest{
+		ScriptPubKeyHex: hex.EncodeToString(fixture.WatchedScript),
+		StartHeight:     0,
+	}, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunishedAfter(peers, "bad-cfilter-hash", bad, "cfilter"); ok {
+		return []score.Result{{
+			ID:       "bip157.cfilter_block_hash_sequence_mismatch",
+			Title:    "cfilter block-hash mismatch is rejected or punished",
+			Level:    score.Should,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	evidence := "bad-cfilter-hash was not punished after serving a cfilter with the wrong block hash"
+	if waitErr != nil {
+		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-cfilter-hash", bad))
+	}
+	return []score.Result{{
+		ID:       "bip157.cfilter_block_hash_sequence_mismatch",
+		Title:    "cfilter block-hash mismatch is rejected or punished",
+		Level:    score.Should,
+		Status:   score.Fail,
+		Evidence: evidence,
+	}}, nil
+}
+
+func runInvalidDownloadedBlockAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
+		CorruptBlocks: map[uint32]bool{1: true},
+	}))
+	if err := bad.Start("127.0.0.1:0"); err != nil {
+		return nil, err
+	}
+	defer bad.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-block",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	scriptHex := hex.EncodeToString(fixture.WatchedScript)
+	if err := client.PostJSON(ctx, "/watch-script", api.WatchScriptRequest{
+		ScriptPubKeyHex: scriptHex,
+		StartHeight:     0,
+	}, nil); err != nil {
+		return nil, fmt.Errorf("watch script: %w", err)
+	}
+
+	tip := fixture.Blocks[len(fixture.Blocks)-1]
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	waitErr := waitForAdapterTip(waitCtx, client, tip.Block.BlockHash().String(), tip.Height)
+
+	noMatchCtx, noMatchCancel := context.WithTimeout(ctx, recoverableDelay(opts))
+	defer noMatchCancel()
+	matches, matchErr := waitForNoMatches(noMatchCtx, client, api.GetMatchesRequest{
+		ScriptPubKeyHex: scriptHex,
+		StartHeight:     0,
+		StopHeight:      tip.Height,
+	})
+	if matchErr != nil {
+		return []score.Result{{
+			ID:       "blocks.invalid_downloaded_block_rejected",
+			Title:    "invalid downloaded block is rejected",
+			Level:    score.Must,
+			Status:   score.Fail,
+			Evidence: fmt.Sprintf("%v; reported matches: %+v", matchErr, matches.Matches),
+		}}, nil
+	}
+
+	var peers api.ListPeersResponse
+	if err := client.PostJSON(ctx, "/list-peers", map[string]string{}, &peers); err != nil {
+		return nil, fmt.Errorf("list peers: %w", err)
+	}
+	if ok, evidence := peerPunishedAfter(peers, "bad-block", bad, "block"); ok {
+		return []score.Result{{
+			ID:       "blocks.invalid_downloaded_block_rejected",
+			Title:    "invalid downloaded block is rejected",
+			Level:    score.Must,
+			Status:   score.Pass,
+			Evidence: evidence,
+		}}, nil
+	}
+	evidence := "bad-block was not punished after serving an invalid downloaded block"
+	if waitErr != nil {
+		evidence = fmt.Sprintf("%v; %s", waitErr, transcriptSummary("bad-block", bad))
+	}
+	return []score.Result{{
+		ID:       "blocks.invalid_downloaded_block_rejected",
+		Title:    "invalid downloaded block is rejected",
+		Level:    score.Must,
+		Status:   score.Fail,
+		Evidence: evidence,
+	}}, nil
 }
 
 func runUnresponsivePeerAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
@@ -1265,6 +1483,23 @@ func waitForMatches(ctx context.Context, client jsonPoster, req api.GetMatchesRe
 		select {
 		case <-ctx.Done():
 			return last, fmt.Errorf("adapter reported %d matches, expected at least %d", len(last.Matches), want)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForNoMatches(ctx context.Context, client jsonPoster, req api.GetMatchesRequest) (api.GetMatchesResponse, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	var last api.GetMatchesResponse
+	for {
+		err := client.PostJSON(ctx, "/matches", req, &last)
+		if err == nil && len(last.Matches) > 0 {
+			return last, fmt.Errorf("adapter reported %d matches from data that should have been rejected", len(last.Matches))
+		}
+		select {
+		case <-ctx.Done():
+			return last, nil
 		case <-ticker.C:
 		}
 	}

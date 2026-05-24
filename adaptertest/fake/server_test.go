@@ -61,6 +61,47 @@ func TestFakeAdapterReportsFixtureMatches(t *testing.T) {
 	}
 }
 
+func TestFakeAdapterSuppressesMatchesForInvalidBlockScenario(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	client := api.NewClient(server.URL)
+	if err := client.PostJSON(context.Background(), "/configure", api.ConfigureRequest{
+		Network: "regtest",
+		Peers: []api.PeerConfig{{
+			ID:      "bad-block",
+			Address: "127.0.0.1:18444",
+		}},
+	}, nil); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := client.PostJSON(context.Background(), "/start", map[string]string{}, nil); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	scriptHex := hex.EncodeToString(fixture.WatchedScript)
+	if err := client.PostJSON(context.Background(), "/watch-script", api.WatchScriptRequest{
+		ScriptPubKeyHex: scriptHex,
+	}, nil); err != nil {
+		t.Fatalf("watch script: %v", err)
+	}
+
+	var matches api.GetMatchesResponse
+	if err := client.PostJSON(context.Background(), "/matches", api.GetMatchesRequest{
+		ScriptPubKeyHex: scriptHex,
+		StopHeight:      2,
+	}, &matches); err != nil {
+		t.Fatalf("matches: %v", err)
+	}
+	if len(matches.Matches) != 0 {
+		t.Fatalf("invalid block scenario should not report fake matches")
+	}
+}
+
 func TestHarnessPassesAgainstFakeAdapter(t *testing.T) {
 	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
 	if err != nil {

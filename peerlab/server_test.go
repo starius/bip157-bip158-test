@@ -242,6 +242,97 @@ func TestServerCanSendWrongFilterType(t *testing.T) {
 	}
 }
 
+func TestServerCanSendEmptyCFHeaders(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		EmptyCFHeaders: map[uint32]bool{1: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getCFHeaders := wire.NewMsgGetCFHeaders(wire.GCSFilterRegular, 1, &stop)
+	if err := wire.WriteMessage(conn, getCFHeaders, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfheaders: %v", err)
+	}
+	cfHeaders := readMessageOf[*wire.MsgCFHeaders](t, conn, fixture)
+	if len(cfHeaders.FilterHashes) != 0 {
+		t.Fatalf("expected empty cfheaders, got %d hashes", len(cfHeaders.FilterHashes))
+	}
+}
+
+func TestServerCanSendWrongCFilterBlockHash(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		WrongCFilterBlockHash: map[uint32]bool{2: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	stop := fixture.Blocks[2].Block.BlockHash()
+	getFilters := wire.NewMsgGetCFilters(wire.GCSFilterRegular, 2, &stop)
+	if err := wire.WriteMessage(conn, getFilters, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getcfilters: %v", err)
+	}
+	filter := readMessageOf[*wire.MsgCFilter](t, conn, fixture)
+	if filter.BlockHash == fixture.Blocks[2].Block.BlockHash() {
+		t.Fatalf("cfilter block hash stayed honest")
+	}
+	if !chainlab.EqualBytes(filter.Data, fixture.Blocks[2].Filter.FilterBytes) {
+		t.Fatalf("wrong-hash behavior should not corrupt filter bytes")
+	}
+}
+
+func TestServerCanCorruptDownloadedBlock(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture, WithBehavior(Behavior{
+		CorruptBlocks: map[uint32]bool{1: true},
+	}))
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	conn := dialAndHandshake(t, server, fixture)
+	defer conn.Close()
+
+	hash := fixture.Blocks[1].Block.BlockHash()
+	getData := wire.NewMsgGetData()
+	_ = getData.AddInvVect(wire.NewInvVect(wire.InvTypeBlock, &hash))
+	if err := wire.WriteMessage(conn, getData, wire.ProtocolVersion, fixture.Params.Net); err != nil {
+		t.Fatalf("send getdata: %v", err)
+	}
+	block := readMessageOf[*wire.MsgBlock](t, conn, fixture)
+	if block.BlockHash() != hash {
+		t.Fatalf("corrupt block changed its header hash")
+	}
+	if chainlab.EqualBytes(
+		block.Transactions[0].TxOut[0].PkScript,
+		fixture.Blocks[1].Block.Transactions[0].TxOut[0].PkScript,
+	) {
+		t.Fatalf("downloaded block was not corrupted")
+	}
+}
+
 func TestServerCanDelayResponses(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {

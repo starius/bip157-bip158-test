@@ -174,8 +174,13 @@ func (s *Server) handleMatches(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	watch, watched := s.watches[req.ScriptPubKeyHex]
+	invalidBlockRun := s.hasPeerLocked("bad-block")
 	s.mu.Unlock()
 	if !watched {
+		writeJSON(w, api.GetMatchesResponse{})
+		return
+	}
+	if invalidBlockRun {
 		writeJSON(w, api.GetMatchesResponse{})
 		return
 	}
@@ -237,6 +242,15 @@ func fakePeerError(adversarial bool) string {
 		return "simulated deterministic fault"
 	}
 	return ""
+}
+
+func (s *Server) hasPeerLocked(id string) bool {
+	for _, peer := range s.peers {
+		if peer.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func requirePost(w http.ResponseWriter, r *http.Request) bool {

@@ -36,6 +36,9 @@ type Behavior struct {
 	CorruptCFCheckpts       map[uint32]bool
 	CorruptCFilters         map[uint32]bool
 	CorruptPrevFilterHeader map[uint32]bool
+	EmptyCFHeaders          map[uint32]bool
+	WrongCFilterBlockHash   map[uint32]bool
+	CorruptBlocks           map[uint32]bool
 	DelayByCommand          map[string]time.Duration
 	DelayOnceByCommand      map[string]time.Duration
 	WrongFilterType         map[string]wire.FilterType
@@ -205,7 +208,11 @@ func (s *Server) handleMessage(conn net.Conn, peer string, msg wire.Message) err
 			if block == nil {
 				continue
 			}
-			if err := s.write(conn, peer, block.Block); err != nil {
+			msg := block.Block
+			if s.behavior.CorruptBlocks[block.Height] {
+				msg = corruptBlock(block.Block)
+			}
+			if err := s.write(conn, peer, msg); err != nil {
 				return err
 			}
 		}
@@ -260,6 +267,9 @@ func (s *Server) cfHeadersResponse(req *wire.MsgGetCFHeaders) (*wire.MsgCFHeader
 	if s.behavior.CorruptPrevFilterHeader[req.StartHeight] {
 		resp.PrevFilterHeader = corruptHash(resp.PrevFilterHeader)
 	}
+	if s.behavior.EmptyCFHeaders[req.StartHeight] {
+		return resp, nil
+	}
 	for h := int(req.StartHeight); h <= stopHeight; h++ {
 		hash := s.fixture.Blocks[h].Filter.FilterHash
 		if s.behavior.CorruptCFHeaders[uint32(h)] {
@@ -282,6 +292,9 @@ func (s *Server) cfiltersResponse(req *wire.MsgGetCFilters) ([]wire.Message, err
 	for h := int(req.StartHeight); h <= stopHeight; h++ {
 		block := s.fixture.Blocks[h]
 		hash := block.Block.BlockHash()
+		if s.behavior.WrongCFilterBlockHash[uint32(h)] {
+			hash = corruptHash(hash)
+		}
 		data := append([]byte(nil), block.Filter.FilterBytes...)
 		if s.behavior.CorruptCFilters[uint32(h)] {
 			data = corruptBytes(data)
@@ -409,12 +422,28 @@ func corruptBytes(data []byte) []byte {
 	return out
 }
 
+func corruptBlock(block *wire.MsgBlock) *wire.MsgBlock {
+	out := block.Copy()
+	for _, tx := range out.Transactions {
+		if len(tx.TxOut) == 0 {
+			continue
+		}
+		tx.TxOut[0].PkScript = append(append([]byte(nil), tx.TxOut[0].PkScript...), 0x51)
+		return out
+	}
+	out.Header.Nonce ^= 0x01
+	return out
+}
+
 func cloneBehavior(behavior Behavior) Behavior {
 	return Behavior{
 		CorruptCFHeaders:        cloneBoolMap(behavior.CorruptCFHeaders),
 		CorruptCFCheckpts:       cloneBoolMap(behavior.CorruptCFCheckpts),
 		CorruptCFilters:         cloneBoolMap(behavior.CorruptCFilters),
 		CorruptPrevFilterHeader: cloneBoolMap(behavior.CorruptPrevFilterHeader),
+		EmptyCFHeaders:          cloneBoolMap(behavior.EmptyCFHeaders),
+		WrongCFilterBlockHash:   cloneBoolMap(behavior.WrongCFilterBlockHash),
+		CorruptBlocks:           cloneBoolMap(behavior.CorruptBlocks),
 		DelayByCommand:          cloneDurationMap(behavior.DelayByCommand),
 		DelayOnceByCommand:      cloneDurationMap(behavior.DelayOnceByCommand),
 		WrongFilterType:         cloneFilterTypeMap(behavior.WrongFilterType),

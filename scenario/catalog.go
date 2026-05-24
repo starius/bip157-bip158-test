@@ -152,11 +152,16 @@ func conformanceScenarios() []Definition {
 		{ID: "bip157.wrong_filter_type_response", Title: "wrong filter type responses are rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.bad_cfcheckpt_response", Title: "bad compact-filter checkpoint response is rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.bad_cfheaders_prev_header", Title: "bad compact-filter previous header is rejected or punished", Level: score.Should, Source: SourceConformance},
+		{ID: "bip157.empty_cfheaders_response", Title: "empty cfheaders response for a non-empty range is rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.conflict_one_honest_one_liar", Title: "one honest and one liar filter-header conflict", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.direct_bad_cfilter_ban", Title: "bad direct cfilter response is punished", Level: score.Should, Source: SourceConformance},
+		{ID: "bip157.malformed_gcs_filter_payload", Title: "malformed GCS filter payload is rejected or punished", Level: score.Should, Source: SourceConformance},
+		{ID: "bip157.cfilter_block_hash_sequence_mismatch", Title: "cfilter block-hash mismatch is rejected or punished", Level: score.Should, Source: SourceConformance},
 		{ID: "bip157.self_consistent_eclipse", Title: "self-consistent malicious filter chain is reported as trust limitation", Level: score.Should, Source: SourceConformance},
+		{ID: "blocks.invalid_downloaded_block_rejected", Title: "invalid downloaded block is rejected", Level: score.Must, Source: SourceConformance},
 		{ID: "network.outage_filter_headers", Title: "temporary outage during filter-header sync recovers", Level: score.Must, Source: SourceConformance},
 		{ID: "network.outage_block_download", Title: "temporary outage during block download recovers", Level: score.Must, Source: SourceConformance},
+		{ID: "network.restricted_connect_no_discovery", Title: "restricted explicit-peer mode avoids discovery", Level: score.Info, Source: SourceConformance},
 	}
 }
 
