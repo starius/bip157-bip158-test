@@ -2,12 +2,12 @@
 
 Date: 2026-05-24
 
-This is the active plan after the Wasabi adapter, expanded adversarial rows,
-and latest validation run. Completed Nix pinning, adapter scaffolding,
-first-pass matrix generation, and already-revived scenarios are not repeated
-as active tasks.
+This is the active plan after Wasabi became a strict adapter target and the
+expanded adversarial rows were run. Completed Nix pinning, adapter scaffolding,
+matrix generation, and already-revived scenarios are intentionally omitted
+from the active task list.
 
-## Current Built State
+## Current State
 
 The suite has:
 
@@ -17,10 +17,7 @@ The suite has:
   fixture reaches height 2005 and crosses two compact-filter checkpoint
   intervals.
 - A peer simulator in `peerlab/` that serves headers, blocks, `cfheaders`,
-  `cfilters`, and `cfcheckpt`, and can inject corrupt filter data, corrupt
-  `PrevFilterHeader`, empty `cfheaders`, wrong filter types, wrong `cfilter`
-  block hashes, invalid downloaded blocks, scrambled headers, and temporary
-  delays.
+  `cfilters`, and `cfcheckpt`, and can inject bad data and temporary delays.
 - A harness in `harness/`, CLI runners in `cmd/`, and a cross-implementation
   matrix generator.
 - Fake, Kyoto, Neutrino, Nakamoto, and Wasabi adapters.
@@ -28,7 +25,7 @@ The suite has:
 - A tracked latest matrix in `IMPLEMENTATION_MATRIX.md`.
 - Latest validation and failure classification in `VALIDATION_REPORT.md`.
 
-Current validation summary:
+Latest validation summary:
 
 - Fake adapter: green, 70 pass and 18 skipped.
 - Kyoto adapter: red, 24 pass, 46 fail, and 18 skipped.
@@ -38,7 +35,7 @@ Current validation summary:
 
 ## Active Coverage
 
-The active suite now covers:
+The active suite covers:
 
 - BIP158 element rules for coinbase output inclusion, coinbase input
   exclusion, OP_RETURN exclusion, full script matching, empty filters,
@@ -56,30 +53,24 @@ The active suite now covers:
 - Black-box variants of the current Kyoto and Neutrino test scenarios that can
   be represented without internal implementation hooks.
 
-## Priority 1: Classify and Fix Current Failures
+## Workstream 1: Classify and Fix Current Failures
 
-1. Debug Kyoto adapter `/list-peers` 503 results after adversarial peer data.
-   The transcript proves the bad peer served data, but the adapter currently
-   loses observability before the harness can ask for peer state.
-2. Patch Kyoto library behavior or adapter reporting for bad `cfcheckpt`, bad
-   `cfheaders`, bad `cfilter`, wrong filter type, and invalid downloaded block
-   cases after the observability issue is isolated.
-3. Patch the Wasabi P2P compact-filter code for bad-data punishment or clear
-   rejection reporting. The adapter is now good enough to expose those library
-   outcomes.
-4. Isolate Neutrino's first-page header disconnect against peerlab. PR `#334`
-   did not fix it; PR `#282` is too old to drop into the current adapter.
-5. Isolate Nakamoto's startup sequence and genesis-filter request behavior.
-   PR `#79` is too old to drop into the current adapter.
+Goal: classify every failed row as a bad scenario, adapter bug, or library bug,
+then fix the simple adapter and library cases.
 
-Exit criteria:
+Tasks:
 
-- Every failed row is classified as bad scenario, adapter bug, or library bug.
-- Rows already passing in at least one real implementation are not weakened to
-  hide failures elsewhere.
-- Any local library patch has an explainer suitable for an upstream PR.
+1. Improve adapter observability where the harness can prove that bad data was
+   served but cannot prove what the implementation did with that peer.
+2. Preserve rows that pass in at least one real implementation; do not weaken
+   those scenarios to hide failures elsewhere.
+3. Patch adapter-owned bugs directly in this repo.
+4. Carry library fixes as local patches with commit-message-quality explainers
+   suitable for upstream PRs.
+5. Record cases that remain blocked after reasonable debugging in
+   `VALIDATION_REPORT.md` and `BIP157_BIP158_FINDINGS.md`.
 
-## Priority 2: Revive Remaining Skipped Rows
+## Workstream 2: Revive Remaining Skipped Rows
 
 Still skipped in the fake-adapter run:
 
@@ -110,7 +101,7 @@ Tasks:
 6. Implement self-consistent eclipse reporting as a trust-limit scenario, not
    as a pass/fail proof of bad data.
 
-## Priority 3: Expand Adversarial BIP157 Coverage
+## Workstream 3: Expand Adversarial BIP157 Coverage
 
 Tasks:
 
@@ -131,7 +122,7 @@ Scenario IDs:
 - `bip157.getcfilters_partial_progress_retry`
 - `bip157.concurrent_range_lookahead_reassignment`
 
-## Priority 4: BIP158 Exactness Still Missing
+## Workstream 4: BIP158 Exactness
 
 Tasks:
 
@@ -147,7 +138,7 @@ Scenario IDs:
 - `bip158.op_return_conflict_resolution`
 - `blocks.witness_prevout_matrix`
 
-## Priority 5: Network and Optional Capability Stress
+## Workstream 5: Network and Optional Capability Stress
 
 Tasks:
 
@@ -171,7 +162,7 @@ Scenario IDs:
 - `import.sideload_headers_then_p2p_divergence`
 - `storage.partial_write_recovery`
 
-## Priority 6: Reporting and CI
+## Workstream 6: Reporting and CI
 
 Tasks:
 
@@ -182,7 +173,7 @@ Tasks:
 5. Keep adapter documentation current for Kyoto, Neutrino, Nakamoto, Wasabi,
    and third-party implementations.
 
-## Scoring Rules To Preserve
+## Scoring Rules
 
 - BIP157/BIP158 `MUST` failures are red.
 - Missing or failing `SHOULD` behavior is orange unless it causes a mandatory
