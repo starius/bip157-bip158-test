@@ -1,6 +1,6 @@
 # Validation Report
 
-Date: 2026-05-23
+Date: 2026-05-24
 
 ## Build and Unit Tests
 
@@ -8,103 +8,124 @@ The following checks passed in the reproducible Nix shell:
 
 ```sh
 go test ./...
-cd adapters/neutrino && go test ./...
-cd adapters/kyoto && cargo test
-cd adapters/nakamoto && cargo test
+(cd adapters/neutrino && go test ./...)
+(cd adapters/kyoto && cargo test)
+(cd adapters/nakamoto && cargo test)
+dotnet test adapters/wasabi.Tests/WasabiAdapter.Tests.csproj
 ```
 
-The shell is pinned by `flake.lock` and includes Go, Rust/Cargo, Bitcoin Core,
-protobuf tooling, and .NET 10 for future Wasabi experiments.
+The adapter binaries also built under the same shell. Kyoto and Nakamoto were
+built with `cargo build --release`; the Wasabi adapter was built with the
+local patch stack in `nix/patches/wasabi`.
 
 ## Matrix
 
 The generated implementation matrix is saved in `IMPLEMENTATION_MATRIX.md`.
-The catalog now contains 88 scenarios. The current executable subset contains
-37 passing scenarios for the fake adapter and includes BIP158 vectors, long
-BIP157 header/filter sync, temporary outage recovery, explicit-peer mode, and
-adversarial `cfheaders`, `cfcheckpt`, `cfilter`, and downloaded-block cases.
+The catalog contains 88 scenarios. The active adapter subset now covers normal
+sync, wallet receive/spend detection, long-chain checkpoint boundaries,
+temporary outage recovery, explicit-peer mode, bad `cfheaders`, bad
+`cfcheckpt`, bad `cfilter`, wrong filter type, unresponsive peers, invalid
+downloaded blocks, and the currently imported Kyoto/Neutrino baseline rows.
 
 | Implementation | Overall | Pass | Fail | Skipped | Notes |
 | --- | --- | ---: | ---: | ---: | --- |
-| no-adapter | green | 10 | 0 | 78 | Internal BIP158 vectors only. |
-| fake adapter | green | 37 | 0 | 51 | Harness self-test target passed every executable scenario. |
-| Kyoto adapter | red | 23 | 14 | 51 | Ordinary sync passes; adversarial validation and invalid-block checks fail. |
-| Neutrino adapter | red | 10 | 22 | 56 | Still disconnects after the first 2000-header page from peerlab. |
-| Nakamoto adapter | red | 10 | 22 | 56 | Adapter starts, but does not advance past peerlab genesis/filter interaction. |
+| no-adapter | green | 11 | 0 | 77 | Internal BIP158 vectors only. |
+| fake adapter | green | 70 | 0 | 18 | Harness self-test target passed every active adapter scenario. |
+| Kyoto adapter | red | 24 | 46 | 18 | Normal sync and outage recovery pass; adversarial peer handling and invalid downloaded blocks fail. |
+| Wasabi adapter | red | 24 | 46 | 18 | Patched P2P client reaches the tip and scans filters, but fails adversarial peer handling and invalid downloaded blocks. |
+| Neutrino adapter | red | 12 | 53 | 23 | Still disconnects after the first 2000-header page from peerlab in most P2P rows. |
+| Nakamoto adapter | red | 11 | 54 | 23 | Connects to peerlab, but does not reach the fixture tip and often requests the genesis filter. |
 
-## Kyoto
+## Failure Classification
 
-Kyoto passes the main honest and recovery paths:
+No active scenario is currently classified as a bad test. The fake adapter
+passes every active adapter row, and at least Kyoto or Wasabi passes the normal
+long-chain, checkpoint, outage, and wallet-match rows that Neutrino and
+Nakamoto fail. That makes the current Neutrino/Nakamoto failures real
+adapter-or-library compatibility problems, not proof that the scenarios are
+malformed.
+
+Known adapter or observability issues:
+
+- Kyoto returns `/list-peers` 503 in 25 failing rows after bad peer data. The
+  transcript proves the bad data was served, but the adapter loses the ability
+  to report peer state. Those rows remain failed, but their root cause is
+  classified as adapter observability until isolated further.
+- Neutrino's and Nakamoto's broad P2P failures are classified as unresolved
+  adapter/library compatibility. They fail before most adversarial compact
+  filter checks become meaningful.
+- A Wasabi adapter peer-address mapping issue was fixed before this run; no
+  remaining Wasabi failure is currently classified as adapter-only.
+
+Known library or upstream-code issues:
+
+- The Wasabi P2P compact-filter PR needed a local BIP157 fix:
+  `0002-anchor-height-one-to-genesis-filter-header.patch`. Without it, a
+  `cfheaders` range starting at height 1 is checked against zero instead of
+  the genesis filter header.
+- The patched Wasabi P2P client does not punish or otherwise expose rejection
+  for corrupt `cfcheckpt`, corrupt `cfheaders`, bad `cfilter`, wrong filter
+  type, or invalid downloaded block cases.
+- Kyoto does not expose durable bad-peer punishment for the adversarial
+  compact-filter rows. Some failures are obscured by the adapter 503 issue, but
+  the rows that do return peer state still show "not punished" outcomes.
+- Neutrino and Nakamoto still need focused protocol debugging before their
+  failures can be assigned cleanly to the adapter or library.
+
+## Implementation Notes
+
+Kyoto and Wasabi both pass the main honest and recovery paths:
 
 - honest wallet receive/spend
 - long chain to height 2005
+- compact-filter checkpoint boundaries
 - large compact-filter batch progress
-- checkpoint-boundary sync
-- best-block, block-hash, unknown-height, and peer API checks
+- best-block and block-hash API checks
 - temporary `cfheaders` and block-download delay recovery
 - explicit-peer/no-discovery mode
 
-Kyoto fails two executable MUST rows:
+Kyoto and Wasabi both fail the active adversarial rows for corrupt or
+conflicting compact-filter data. Wasabi reports cleaner "not punished"
+evidence. Kyoto often reports `/list-peers` 503 after the bad transcript,
+which needs adapter-level debugging before every Kyoto row can be classified
+precisely.
 
-- `blocks.invalid_downloaded_block_rejected`
-- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
-
-Kyoto also fails the executable SHOULD adversarial rows for bad `cfcheckpt`,
-bad `PrevFilterHeader`, empty `cfheaders`, conflicting `cfheaders`, corrupt or
-malformed `cfilter`, wrong `cfilter` block hash, wrong filter type, and
-unresponsive peer handling. The common pattern is that the adapter either
-reaches the tip or cannot report a peer punishment/error after peerlab serves
-the bad data.
-
-## Neutrino
-
-Neutrino passes only the implementation-independent BIP158 vectors in this
-black-box run. Every adapter scenario that requires long-chain sync fails
-before compact-filter messages are requested.
-
-Representative peer transcript:
+Neutrino still fails the ordinary long-chain P2P path:
 
 ```text
 getheaders -> headers(2000) -> disconnect EOF
 ```
 
-This remains either a peerlab/Neutrino interoperability gap around header
-pagination or a behavior difference from Neutrino's internal SimNet tests. It
-is still a red black-box result because the adapter does not satisfy the
-required best-block and wallet-match API contract.
+Open PR `lightninglabs/neutrino#334` built but did not change this result.
+Open PR `lightninglabs/neutrino#282` is too old for the current adapter API and
+does not build as a drop-in replacement. PR `#345` is adjacent import
+verification work, not a fix for the current P2P header-sync failure. PR
+`#348` is unrelated Tor v3 banman work.
 
-## Nakamoto
+Nakamoto starts and handshakes, but does not reach height 2005. The transcript
+often shows `getcfilters` for regtest genesis instead of long-chain header
+progress. Open PR `cloudhead/nakamoto#79` is too old for the current adapter
+package layout and was not a usable drop-in fix.
 
-The new Nakamoto adapter builds and its unit tests pass. In the black-box run,
-Nakamoto connects to peerlab and exchanges version/verack/ping traffic, but it
-does not reach the long-chain tip. Some scenarios show repeated or initial
-`getcfilters` requests for the regtest genesis block, but no successful
-long-chain header progress.
+Wasabi is now a first-class strict target through the local adapter. Open PR
+`WalletWasabi/WalletWasabi#14546` is vendored as
+`0001-p2p-compact-filter-provider.patch`; the local
+`0002-anchor-height-one-to-genesis-filter-header.patch` fixes a BIP157
+height-one filter-header bug still present in that PR. Open PR `#14025` is
+parallel block-download work and did not address the compact-filter validation
+failures.
 
-The current result should be treated as an adapter/peerlab compatibility
-obstacle until isolated further. It is scored red because the strict adapter
-contract requires the implementation to reach the harness tip and report wallet
-matches from P2P data.
+## Remaining Skipped Rows
 
-## Wasabi
+The remaining 18 fake-adapter skipped rows are deliberate catalog entries that
+need new harness machinery:
 
-Wasabi master remains outside the strict BIP157 P2P matrix because its current
-standard-filter path uses Bitcoin RPC filter calls.
+- one-block and two-block reorgs
+- restart/persistence/import scenarios
+- Neutrino initial interval permutations
+- randomized block/filter generation
+- self-consistent eclipse reporting
+- transaction broadcast
 
-The evaluated P2P compact-filter PR code is saved as a local patch and contains
-useful validation logic for empty `cfheaders`, wrong ranges, previous-header
-mismatches, malformed GCS filters, and filter-header mismatches. Those ideas
-are now represented in the suite. It is not yet a strict adapter target: the
-app startup path still constructs and monitors Bitcoin RPC, and the regtest P2P
-helper hardcodes the default regtest peer port instead of accepting
-harness-supplied peers.
-
-## Remaining Gaps
-
-- Reorg and persistence scenarios remain cataloged but not executable.
-- The self-consistent eclipse scenario remains cataloged as a trust-limit case.
-- Several Neutrino baseline permutations remain cataloged only.
-- Nakamoto needs a focused adapter/peerlab compatibility investigation before
-  its failures can be classified as implementation bugs.
-- Wasabi needs either upstream explicit-peer regtest support or a smaller
-  library-level adapter that bypasses the normal app startup path.
+These are not scored as pass. They remain visible in every run so the suite
+does not silently lose coverage.

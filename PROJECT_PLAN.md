@@ -1,14 +1,15 @@
 # BIP157/BIP158 Conformance Test Suite Plan
 
-Date: 2026-05-23
+Date: 2026-05-24
 
-This is the current active plan for the conformance suite. Completed adapter,
-matrix, Nix, and first adversarial-scenario work has been removed from the
-active task list.
+This is the active plan after the Wasabi adapter, expanded adversarial rows,
+and latest validation run. Completed Nix pinning, adapter scaffolding,
+first-pass matrix generation, and already-revived scenarios are not repeated
+as active tasks.
 
 ## Current Built State
 
-The suite now has:
+The suite has:
 
 - A fixed adapter schema in `proto/bip157test.proto` and HTTP/JSON API types in
   `api/`.
@@ -18,119 +19,98 @@ The suite now has:
 - A peer simulator in `peerlab/` that serves headers, blocks, `cfheaders`,
   `cfilters`, and `cfcheckpt`, and can inject corrupt filter data, corrupt
   `PrevFilterHeader`, empty `cfheaders`, wrong filter types, wrong `cfilter`
-  block hashes, invalid downloaded blocks, and temporary delays.
+  block hashes, invalid downloaded blocks, scrambled headers, and temporary
+  delays.
 - A harness in `harness/`, CLI runners in `cmd/`, and a cross-implementation
   matrix generator.
-- Fake, Kyoto, Neutrino, and Nakamoto adapters.
+- Fake, Kyoto, Neutrino, Nakamoto, and Wasabi adapters.
 - Nix-pinned Go, Rust/Cargo, Bitcoin Core, protobuf, and .NET 10 tooling.
 - A tracked latest matrix in `IMPLEMENTATION_MATRIX.md`.
-- Latest validation in `VALIDATION_REPORT.md`.
+- Latest validation and failure classification in `VALIDATION_REPORT.md`.
 
 Current validation summary:
 
-- Fake adapter: green.
-- Kyoto adapter: red; ordinary sync and recovery pass, adversarial validation
-  and invalid-block checks fail.
-- Neutrino adapter: red; disconnects after peerlab's first 2000-header page.
-- Nakamoto adapter: red; connects to peerlab but does not reach the fixture tip.
-- Wasabi: not scored as a strict target. Master uses RPC filters; the P2P PR is
-  experimental and does not yet expose harness-controlled regtest peers through
-  the normal headless startup path.
+- Fake adapter: green, 70 pass and 18 skipped.
+- Kyoto adapter: red, 24 pass, 46 fail, and 18 skipped.
+- Wasabi adapter: red, 24 pass, 46 fail, and 18 skipped.
+- Neutrino adapter: red, 12 pass, 53 fail, and 23 skipped.
+- Nakamoto adapter: red, 11 pass, 54 fail, and 23 skipped.
 
-## Runnable Scenarios
+## Active Coverage
 
-These run without an adapter:
+The active suite now covers:
 
-- `bip158.coinbase_input_excluded`
-- `bip158.coinbase_output_included`
-- `bip158.empty_filter_wire_forms`
-- `bip158.full_script_not_pushdata`
-- `bip158.op_return_excluded`
-- `bip158.prevout_legacy_included`
-- `bip158.prevout_p2sh_included`
-- `bip158.prevout_p2wsh_included`
-- `bip158.prevout_taproot_included`
-- `bip158.zero_element_serialization`
+- BIP158 element rules for coinbase output inclusion, coinbase input
+  exclusion, OP_RETURN exclusion, full script matching, empty filters,
+  zero-element serialization, legacy prevouts, P2SH, P2WSH, and Taproot.
+- Basic adapter behavior: configure, start, stop, watch script, wallet
+  receive/spend matches, best block, block hash lookup, and peer listing.
+- BIP157 long-chain sync across compact-filter checkpoint boundaries.
+- Large-batch progress and timeout behavior.
+- Temporary outage recovery for `cfheaders` and block download.
+- Explicit harness peer mode with discovery disabled.
+- Bad `cfcheckpt`, bad `PrevFilterHeader`, empty `cfheaders`, conflicting
+  `cfheaders`, corrupt `cfilter`, malformed GCS payload, wrong `cfilter` block
+  hash, wrong filter type, unresponsive peer, scrambled headers, and invalid
+  downloaded block behavior.
+- Black-box variants of the current Kyoto and Neutrino test scenarios that can
+  be represented without internal implementation hooks.
 
-These additionally run with `--adapter-url`:
+## Priority 1: Classify and Fix Current Failures
 
-- `adapter.honest_wallet_receive_spend`
-- `kyoto.various_client_methods`
-- `kyoto.whitelist_only_sync`
-- `chain.long_checkpointed_header_sync`
-- `bip157.large_batch_progress_timeout`
-- `bip157.cfheaders_order_and_checkpoint_boundaries`
-- `bip157.bad_cfcheckpt_response`
-- `bip157.bad_cfheaders_prev_header`
-- `bip157.empty_cfheaders_response`
-- `bip157.conflict_one_honest_one_liar`
-- `bip157.direct_bad_cfilter_ban`
-- `bip157.malformed_gcs_filter_payload`
-- `bip157.cfilter_block_hash_sequence_mismatch`
-- `bip157.wrong_filter_type_response`
-- `blocks.invalid_downloaded_block_rejected`
-- `network.outage_filter_headers`
-- `network.outage_block_download`
-- `network.restricted_connect_no_discovery`
-- `neutrino.sync_without_headers_import.initial_sync`
-- `neutrino.sync_without_headers_import.one_shot_rescan`
-- `neutrino.sync_without_headers_import.long_rescan_start`
-- `neutrino.sync_without_headers_import.rescan_results`
-- `neutrino.blockmanager_invalid_interval.invalid_prev_header`
-- `neutrino.cfcheckpt_sanity.case_1`
-- `neutrino.cfheaders_mismatch.case_1`
-- `neutrino.detect_bad_peers.filter_hash_mismatch`
-- `neutrino.detect_bad_peers.unresponsive_peer`
-
-## Active Priority 1: Isolate Adapter/Peerlab Compatibility
-
-Neutrino and Nakamoto both fail before useful compact-filter adversarial
-evidence is available. These are now the highest-leverage blockers.
-
-Tasks:
-
-1. Compare peerlab's 2000-header response shape with btcd/bitcoind behavior
-   used by Neutrino's existing rpctest/SimNet tests.
-2. Add a focused compatibility test for header pagination and stop-hash
-   handling.
-3. Determine why Nakamoto asks peerlab for the genesis filter and does not
-   advance to the long-chain tip.
-4. Add focused peerlab transcript assertions for Nakamoto's expected startup
-   sequence.
-5. Re-run Neutrino and Nakamoto after root cause fixes.
+1. Debug Kyoto adapter `/list-peers` 503 results after adversarial peer data.
+   The transcript proves the bad peer served data, but the adapter currently
+   loses observability before the harness can ask for peer state.
+2. Patch Kyoto library behavior or adapter reporting for bad `cfcheckpt`, bad
+   `cfheaders`, bad `cfilter`, wrong filter type, and invalid downloaded block
+   cases after the observability issue is isolated.
+3. Patch the Wasabi P2P compact-filter code for bad-data punishment or clear
+   rejection reporting. The adapter is now good enough to expose those library
+   outcomes.
+4. Isolate Neutrino's first-page header disconnect against peerlab. PR `#334`
+   did not fix it; PR `#282` is too old to drop into the current adapter.
+5. Isolate Nakamoto's startup sequence and genesis-filter request behavior.
+   PR `#79` is too old to drop into the current adapter.
 
 Exit criteria:
 
-- Each adapter either reaches height 2005 and starts compact-filter checks, or
-  the report identifies the exact protocol incompatibility.
+- Every failed row is classified as bad scenario, adapter bug, or library bug.
+- Rows already passing in at least one real implementation are not weakened to
+  hide failures elsewhere.
+- Any local library patch has an explainer suitable for an upstream PR.
 
-## Active Priority 2: Reorg, Persistence, and Canonicality
+## Priority 2: Revive Remaining Skipped Rows
+
+Still skipped in the fake-adapter run:
+
+- `bip157.self_consistent_eclipse`
+- `kyoto.live_reorg`
+- `kyoto.live_reorg_additional_sync`
+- `kyoto.stop_reorg_resync`
+- `kyoto.stop_reorg_start_on_orphan`
+- `kyoto.stop_reorg_two_resync`
+- `kyoto.tx_can_broadcast`
+- `neutrino.blockmanager_initial_interval.*`
+- `neutrino.import_then_p2p_sync`
+- `neutrino.sync_with_headers_import`
+- `neutrino.sync_without_headers_import.random_blocks_filters`
 
 Tasks:
 
 1. Build forked fixtures and mutable peer behavior for one-block and two-block
    reorgs.
-2. Interrupt `cfheaders` processing, restart with the same data directory, and
-   require compact-filter headers to catch up without data deletion.
-3. Persist an invalid filter-header chain from mutually consistent malicious
-   peers, restart, introduce an honest peer, and require rollback/resync.
-4. Run a long reorg while filters are in flight.
-5. Add stale-branch block request tests for APIs that expose block fetching by
-   hash.
+2. Add restart support in the harness so interrupted `cfheaders`, persisted
+   bad filter headers, and import-then-P2P divergence can be tested.
+3. Add a transaction-broadcast endpoint to the adapter API before activating
+   `kyoto.tx_can_broadcast`.
+4. Translate Neutrino's initial interval permutations into black-box peerlab
+   behavior without relying on internal block manager hooks.
+5. Add randomized deterministic block/filter generation for the
+   `random_blocks_filters` row.
+6. Implement self-consistent eclipse reporting as a trust-limit scenario, not
+   as a pass/fail proof of bad data.
 
-Scenario IDs:
-
-- `kyoto.live_reorg`
-- `kyoto.live_reorg_additional_sync`
-- `kyoto.stop_reorg_resync`
-- `kyoto.stop_reorg_two_resync`
-- `kyoto.stop_reorg_start_on_orphan`
-- `persistence.interrupted_cfheaders_restart`
-- `bip157.invalid_persisted_filter_headers_recover`
-- `chain.reorg_filter_in_flight_long`
-- `kyoto.stale_header_block_request`
-
-## Active Priority 3: Expand Adversarial BIP157 Matrix
+## Priority 3: Expand Adversarial BIP157 Coverage
 
 Tasks:
 
@@ -138,9 +118,8 @@ Tasks:
    `cfcheckpt`, and `cfilter`.
 2. Add bad-data versus timing-race false-ban scenarios.
 3. Add peer-specific stop-hash knowledge tests.
-4. Implement self-consistent eclipse reporting.
-5. Add partial `getcfilters` progress and retry coverage.
-6. Add concurrent range/lookahead reassignment coverage from the Wasabi P2P PR
+4. Add partial `getcfilters` progress and retry coverage.
+5. Add concurrent range/lookahead reassignment coverage from the Wasabi P2P PR
    design.
 
 Scenario IDs:
@@ -149,17 +128,17 @@ Scenario IDs:
 - `peer.bad_data_vs_race_false_ban`
 - `network.followup_nonresponse_not_bad_data`
 - `bip157.stop_hash_known_by_peer`
-- `bip157.self_consistent_eclipse`
 - `bip157.getcfilters_partial_progress_retry`
 - `bip157.concurrent_range_lookahead_reassignment`
 
-## Active Priority 4: BIP158 Exactness Still Missing
+## Priority 4: BIP158 Exactness Still Missing
 
 Tasks:
 
 1. Add OP_RETURN conflict-resolution coverage where the only peer difference is
    improper inclusion of OP_RETURN output scripts.
-2. Add nested-segwit and non-witness prevout coverage.
+2. Add nested-segwit and non-witness prevout coverage beyond the current vector
+   rows.
 3. Add block retrieval with and without witness data when an adapter exposes
    that capability.
 
@@ -168,7 +147,7 @@ Scenario IDs:
 - `bip158.op_return_conflict_resolution`
 - `blocks.witness_prevout_matrix`
 
-## Active Priority 5: Network and Optional Capability Stress
+## Priority 5: Network and Optional Capability Stress
 
 Tasks:
 
@@ -192,7 +171,7 @@ Scenario IDs:
 - `import.sideload_headers_then_p2p_divergence`
 - `storage.partial_write_recovery`
 
-## Active Priority 6: Reporting and CI
+## Priority 6: Reporting and CI
 
 Tasks:
 
