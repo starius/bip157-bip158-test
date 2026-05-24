@@ -50,6 +50,7 @@
               pkgs.openjdk_headless
               pkgs.protobuf
               pkgs.rustc
+              pkgs.rustfmt
               pkgs.tor
             ];
             shellHook = ''
