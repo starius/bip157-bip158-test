@@ -36,3 +36,8 @@ go.work.sum
 **/*.test
 **/filters.db
 **/neutrino-adapter-*/
+adapters/wasabi/.wasabi-src/
+adapters/wasabi/bin/
+adapters/wasabi/obj/
+adapters/wasabi.Tests/bin/
+adapters/wasabi.Tests/obj/

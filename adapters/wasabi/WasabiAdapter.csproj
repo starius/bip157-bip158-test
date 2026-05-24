@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>wasabi-adapter</AssemblyName>
+    <OutputType>Exe</OutputType>
+    <WasabiPatchedSource Condition="'$(WasabiPatchedSource)' == ''">$(WASABI_PATCHED_SOURCE)</WasabiPatchedSource>
+  </PropertyGroup>
+
+  <Target Name="RequireWasabiPatchedSource" BeforeTargets="ResolveReferences" Condition="'$(WasabiPatchedSource)' == ''">
+    <Error Text="Set WASABI_PATCHED_SOURCE to a Wasabi checkout with nix/patches/wasabi/0001-p2p-compact-filter-provider.patch applied." />
+  </Target>
+
+  <ItemGroup Condition="'$(WasabiPatchedSource)' != ''">
+    <ProjectReference Include="$(WasabiPatchedSource)/WalletWasabi/WalletWasabi.csproj" />
+  </ItemGroup>
+</Project>

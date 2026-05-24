@@ -109,23 +109,27 @@ transcript proves the bad BIP157 response was actually served.
 
 ### Wasabi
 
-Current Wasabi master is not included as a strict BIP157 P2P adapter. Its
-standard-filter synchronization path uses Bitcoin RPC filter calls, while this
-suite's strict adapter contract requires all needed block headers, compact
-filter headers, compact filters, and blocks to come from the Bitcoin P2P
-network without RPC, Electrum, esplora, or a Wasabi backend.
+```sh
+src=$(./adapters/wasabi/prepare-source.sh /tmp/wasabi-src)
+export WASABI_PATCHED_SOURCE="$src"
+dotnet test adapters/wasabi.Tests/WasabiAdapter.Tests.csproj
+dotnet build adapters/wasabi/WasabiAdapter.csproj
+dotnet adapters/wasabi/bin/Debug/net10.0/wasabi-adapter.dll --listen 127.0.0.1:0
+```
 
-The P2P compact-filter PR code is saved as a local patch at
-`nix/patches/wasabi/0001-p2p-compact-filter-provider.patch`. The Nix shell pins
-the stable public base commit from
+The Wasabi adapter pins
 [`WalletWasabi/WalletWasabi`](https://github.com/WalletWasabi/WalletWasabi)
-and exposes `WASABI_SOURCE` plus `WASABI_P2P_PATCH` for adapter builds.
+through the Nix flake. Wasabi's current standard-filter synchronization path
+uses Bitcoin RPC filter calls, so the suite applies local patches under
+`nix/patches/wasabi` before building:
 
-The evaluated PR branch targets .NET 10. The Nix shell includes
-`dotnet-sdk_10` so future Wasabi adapter experiments can build with the SDK
-requested by `global.json`.
+- `0001-p2p-compact-filter-provider.patch` is a squashed local copy of the
+  Wasabi P2P compact-filter PR.
+- `0002-anchor-height-one-to-genesis-filter-header.patch` fixes height-one
+  filter-header validation so BIP157 `cfheaders` ranges starting after genesis
+  are anchored to the genesis filter header.
 
-The strict Wasabi adapter should be a small library-level wrapper around
-Wasabi's P2P filter code, not a wrapper around the full application. It must
-construct a harness-controlled regtest peer set, attach Wasabi's header and
-compact-filter behaviors, and expose the suite adapter API.
+The adapter is a library-level wrapper around the patched Wasabi P2P code. It
+constructs a harness-controlled regtest peer set, attaches Wasabi's header and
+compact-filter behaviors, scans Wasabi's filter store for watched scripts, and
+downloads matching blocks over P2P through Wasabi's block provider.
