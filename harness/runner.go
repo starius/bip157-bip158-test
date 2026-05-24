@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/bip157-bip158-test/suite/environment"
 	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/scenario"
 	"github.com/bip157-bip158-test/suite/score"
@@ -19,9 +21,11 @@ import (
 
 // Options configures one black-box conformance run.
 type Options struct {
-	AdapterURL string
-	DataDir    string
-	Timeout    time.Duration
+	AdapterURL   string
+	DataDir      string
+	Environment  string
+	ProxyAddress string
+	Timeout      time.Duration
 }
 
 type adapterScenario struct {
@@ -45,6 +49,10 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	if opts.Timeout == 0 {
 		opts.Timeout = 60 * time.Second
 	}
+	env, err := environment.Lookup(opts.Environment)
+	if err != nil {
+		return score.Summary{}, err
+	}
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
 		return score.Summary{}, err
@@ -52,134 +60,32 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 
 	results := catalogAsSkipped()
 	upsert(&results, runBIP158Internal(fixture)...)
+	upsert(&results, peerIdentityResults(env, fixture)...)
 
 	if opts.AdapterURL != "" {
 		longFixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
 		if err != nil {
 			return score.Summary{}, err
 		}
-		scenarios := []adapterScenario{
-			{
-				id:      "adapter.honest_wallet_receive_spend",
-				title:   "honest peer wallet receive and spend",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runHonestAdapter,
-			},
-			{
-				id:      "kyoto.various_client_methods",
-				title:   "client best block, header, peer, and unknown hash APIs",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runClientMethodsAdapter,
-			},
-			{
-				id:      "neutrino.sync_without_headers_import.initial_sync",
-				title:   "multi-peer initial sync",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runMultiPeerInitialSyncAdapter,
-			},
-			{
-				id:      "chain.long_checkpointed_header_sync",
-				title:   "long chain crosses compact-filter checkpoints",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runLongChainAdapter,
-			},
-			{
-				id:      "bip157.large_batch_progress_timeout",
-				title:   "large compact-filter batches make progress",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runLargeBatchProgressAdapter,
-			},
-			{
-				id:      "bip157.cfheaders_order_and_checkpoint_boundaries",
-				title:   "cfheaders ordering and checkpoint boundaries are handled",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runCFHeadersBoundaryAdapter,
-			},
-			{
-				id:      "bip157.conflict_one_honest_one_liar",
-				title:   "one honest and one liar filter-header conflict",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runFilterHeaderConflictAdapter,
-			},
-			{
-				id:      "bip157.direct_bad_cfilter_ban",
-				title:   "bad direct cfilter response is punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runBadCFilterAdapter,
-			},
-			{
-				id:      "bip157.cfilter_block_hash_sequence_mismatch",
-				title:   "cfilter block-hash mismatch is rejected or punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runWrongCFilterBlockHashAdapter,
-			},
-			{
-				id:      "bip157.bad_cfcheckpt_response",
-				title:   "bad compact-filter checkpoint response is rejected or punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runBadCFCheckptAdapter,
-			},
-			{
-				id:      "bip157.bad_cfheaders_prev_header",
-				title:   "bad compact-filter previous header is rejected or punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runBadPrevFilterHeaderAdapter,
-			},
-			{
-				id:      "bip157.empty_cfheaders_response",
-				title:   "empty cfheaders response for a non-empty range is rejected or punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runEmptyCFHeadersAdapter,
-			},
-			{
-				id:      "bip157.wrong_filter_type_response",
-				title:   "wrong filter type responses are rejected or punished",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runWrongFilterTypeAdapter,
-			},
-			{
-				id:      "neutrino.detect_bad_peers.unresponsive_peer",
-				title:   "detect bad peers: unresponsive_peer",
-				level:   score.Should,
-				fixture: longFixture,
-				run:     runUnresponsivePeerAdapter,
-			},
-			{
-				id:      "blocks.invalid_downloaded_block_rejected",
-				title:   "invalid downloaded block is rejected",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runInvalidDownloadedBlockAdapter,
-			},
-			{
-				id:      "network.outage_filter_headers",
-				title:   "temporary outage during filter-header sync recovers",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runFilterHeaderOutageAdapter,
-			},
-			{
-				id:      "network.outage_block_download",
-				title:   "temporary outage during block download recovers",
-				level:   score.Must,
-				fixture: longFixture,
-				run:     runBlockDownloadOutageAdapter,
-			},
+		scenarios := adapterScenarios(longFixture)
+		client := api.NewClient(opts.AdapterURL)
+		caps, capEvidence := adapterCapabilities(ctx, client)
+		if ok, reason := adapterSupportsEnvironment(caps, env); !ok {
+			evidence := reason
+			if capEvidence != "" {
+				evidence += "; " + capEvidence
+			}
+			upsert(&results, environmentResult(env, score.Unsupported, evidence))
+			upsert(&results, skippedAdapterScenarios(scenarios, evidence)...)
+			return score.Summarize(results), nil
 		}
-		scenarios = append(scenarios, expandedAdapterScenarios(longFixture)...)
+		if !env.IsClearTCP() {
+			evidence := "overlay lab is not active for this environment"
+			upsert(&results, environmentResult(env, score.Unsupported, evidence))
+			upsert(&results, skippedAdapterScenarios(scenarios, evidence)...)
+			return score.Summarize(results), nil
+		}
+		upsert(&results, environmentResult(env, score.Pass, "environment selected and adapter claimed support"))
 		for _, adapterScenario := range scenarios {
 			scenarioOpts := scenarioOptions(opts, adapterScenario.id)
 			adapterResults, err := adapterScenario.run(ctx, scenarioOpts, adapterScenario.fixture)
@@ -334,6 +240,131 @@ func expandedAdapterScenarios(fixture *chainlab.Fixture) []adapterScenario {
 	}
 
 	return scenarios
+}
+
+func adapterScenarios(longFixture *chainlab.Fixture) []adapterScenario {
+	scenarios := []adapterScenario{
+		{
+			id:      "adapter.honest_wallet_receive_spend",
+			title:   "honest peer wallet receive and spend",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runHonestAdapter,
+		},
+		{
+			id:      "kyoto.various_client_methods",
+			title:   "client best block, header, peer, and unknown hash APIs",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runClientMethodsAdapter,
+		},
+		{
+			id:      "neutrino.sync_without_headers_import.initial_sync",
+			title:   "multi-peer initial sync",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runMultiPeerInitialSyncAdapter,
+		},
+		{
+			id:      "chain.long_checkpointed_header_sync",
+			title:   "long chain crosses compact-filter checkpoints",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runLongChainAdapter,
+		},
+		{
+			id:      "bip157.large_batch_progress_timeout",
+			title:   "large compact-filter batches make progress",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runLargeBatchProgressAdapter,
+		},
+		{
+			id:      "bip157.cfheaders_order_and_checkpoint_boundaries",
+			title:   "cfheaders ordering and checkpoint boundaries are handled",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runCFHeadersBoundaryAdapter,
+		},
+		{
+			id:      "bip157.conflict_one_honest_one_liar",
+			title:   "one honest and one liar filter-header conflict",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runFilterHeaderConflictAdapter,
+		},
+		{
+			id:      "bip157.direct_bad_cfilter_ban",
+			title:   "bad direct cfilter response is punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runBadCFilterAdapter,
+		},
+		{
+			id:      "bip157.cfilter_block_hash_sequence_mismatch",
+			title:   "cfilter block-hash mismatch is rejected or punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runWrongCFilterBlockHashAdapter,
+		},
+		{
+			id:      "bip157.bad_cfcheckpt_response",
+			title:   "bad compact-filter checkpoint response is rejected or punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runBadCFCheckptAdapter,
+		},
+		{
+			id:      "bip157.bad_cfheaders_prev_header",
+			title:   "bad compact-filter previous header is rejected or punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runBadPrevFilterHeaderAdapter,
+		},
+		{
+			id:      "bip157.empty_cfheaders_response",
+			title:   "empty cfheaders response for a non-empty range is rejected or punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runEmptyCFHeadersAdapter,
+		},
+		{
+			id:      "bip157.wrong_filter_type_response",
+			title:   "wrong filter type responses are rejected or punished",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runWrongFilterTypeAdapter,
+		},
+		{
+			id:      "neutrino.detect_bad_peers.unresponsive_peer",
+			title:   "detect bad peers: unresponsive_peer",
+			level:   score.Should,
+			fixture: longFixture,
+			run:     runUnresponsivePeerAdapter,
+		},
+		{
+			id:      "blocks.invalid_downloaded_block_rejected",
+			title:   "invalid downloaded block is rejected",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runInvalidDownloadedBlockAdapter,
+		},
+		{
+			id:      "network.outage_filter_headers",
+			title:   "temporary outage during filter-header sync recovers",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runFilterHeaderOutageAdapter,
+		},
+		{
+			id:      "network.outage_block_download",
+			title:   "temporary outage during block download recovers",
+			level:   score.Must,
+			fixture: longFixture,
+			run:     runBlockDownloadOutageAdapter,
+		},
+	}
+	return append(scenarios, expandedAdapterScenarios(longFixture)...)
 }
 
 func scenarioOptions(opts Options, id string) Options {
@@ -528,30 +559,132 @@ func resultsFromSpecs(specs []resultSpec, status score.Status, evidence string) 
 	return results
 }
 
+func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture) []score.Result {
+	switch env.ID {
+	case environment.IPv4:
+		first := peerlab.NewServer(fixture)
+		if _, err := first.StartInEnvironment(env, 1); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
+		}
+		defer first.Stop()
+		second := peerlab.NewServer(fixture)
+		if _, err := second.StartInEnvironment(env, 2); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
+		}
+		defer second.Stop()
+		firstHost := peerIdentityHost(first.Addr())
+		secondHost := peerIdentityHost(second.Addr())
+		if first.Identity().Distinct && second.Identity().Distinct && firstHost != secondHost {
+			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Pass, "peerlab allocated separate IPv4 loopback identities")}
+		}
+		return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Unsupported, "host only allowed shared IPv4 loopback identity")}
+	case environment.IPv6:
+		first := peerlab.NewServer(fixture)
+		if _, err := first.StartInEnvironment(env, 1); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
+		}
+		defer first.Stop()
+		second := peerlab.NewServer(fixture)
+		if _, err := second.StartInEnvironment(env, 2); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
+		}
+		defer second.Stop()
+		firstHost := peerIdentityHost(first.Addr())
+		secondHost := peerIdentityHost(second.Addr())
+		if first.Identity().Distinct && second.Identity().Distinct && firstHost != secondHost {
+			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Pass, "peerlab allocated separate IPv6 identities")}
+		}
+		return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Unsupported, "IPv6 loopback uses ::1 unless a lab provides extra identities")}
+	default:
+		return []score.Result{identityResult("peer.identity_distinct_overlay", score.Unsupported, "overlay identity checks require the environment lab")}
+	}
+}
+
+func identityResult(id string, status score.Status, evidence string) score.Result {
+	return score.Result{
+		ID:       id,
+		Title:    scenarioTitle(id),
+		Level:    score.Info,
+		Status:   status,
+		Evidence: evidence,
+	}
+}
+
+func environmentResult(env environment.Definition, status score.Status, evidence string) score.Result {
+	id := fmt.Sprintf("env.%s.full_matrix", strings.ReplaceAll(string(env.ID), "-", "_"))
+	return score.Result{
+		ID:       id,
+		Title:    scenarioTitle(id),
+		Level:    score.Info,
+		Status:   status,
+		Evidence: evidence,
+	}
+}
+
+func scenarioTitle(id string) string {
+	for _, def := range scenario.Catalog() {
+		if def.ID == id {
+			return def.Title
+		}
+	}
+	return id
+}
+
+func adapterCapabilities(ctx context.Context, client *api.Client) (api.CapabilitiesResponse, string) {
+	var caps api.CapabilitiesResponse
+	if err := client.PostJSON(ctx, "/capabilities", map[string]string{}, &caps); err != nil {
+		return api.DefaultCapabilities(), fmt.Sprintf("default capabilities used: %v", err)
+	}
+	if len(caps.Environments) == 0 {
+		return api.DefaultCapabilities(), "default capabilities used: empty response"
+	}
+	return caps, ""
+}
+
+func adapterSupportsEnvironment(caps api.CapabilitiesResponse, env environment.Definition) (bool, string) {
+	for _, cap := range caps.Environments {
+		if cap.ID != string(env.ID) {
+			continue
+		}
+		if cap.Supported {
+			return true, ""
+		}
+		if cap.Reason != "" {
+			return false, cap.Reason
+		}
+		return false, fmt.Sprintf("adapter does not support %s", env.ID)
+	}
+	return false, fmt.Sprintf("adapter did not report support for %s", env.ID)
+}
+
+func skippedAdapterScenarios(scenarios []adapterScenario, evidence string) []score.Result {
+	results := make([]score.Result, 0, len(scenarios))
+	for _, scenario := range scenarios {
+		results = append(results, score.Result{
+			ID:       scenario.id,
+			Title:    scenario.title,
+			Level:    scenario.level,
+			Status:   score.Skipped,
+			Evidence: evidence,
+		})
+	}
+	return results
+}
+
 func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	server := peerlab.NewServer(fixture)
-	if err := server.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
 		return nil, err
 	}
 	defer server.Stop()
 
 	client := api.NewClient(opts.AdapterURL)
-	req := api.ConfigureRequest{
-		Network: "regtest",
-		DataDir: opts.DataDir,
-		Peers: []api.PeerConfig{{
-			ID:      "honest-a",
-			Address: server.Addr(),
-			Trusted: true,
-		}},
-		RequiredPeers:  1,
-		AllowDiscovery: false,
-	}
-	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
-		return nil, fmt.Errorf("configure adapter: %w", err)
-	}
-	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
-		return nil, fmt.Errorf("start adapter: %w", err)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "honest-a",
+		Address: server.Addr(),
+		Trusted: true,
+	}}, 1); err != nil {
+		return nil, err
 	}
 	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
 
@@ -609,7 +742,7 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 
 func runClientMethodsAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	server := peerlab.NewServer(fixture)
-	if err := server.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
 		return nil, err
 	}
 	defer server.Stop()
@@ -693,7 +826,7 @@ func runScrambledHeadersAdapter(ctx context.Context, opts Options, fixture *chai
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptHeaders: map[uint32]bool{2: true},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -737,12 +870,12 @@ func runScrambledHeadersAdapter(ctx context.Context, opts Options, fixture *chai
 
 func runMultiPeerInitialSyncAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	peerA := peerlab.NewServer(fixture)
-	if err := peerA.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, peerA, 1); err != nil {
 		return nil, err
 	}
 	defer peerA.Stop()
 	peerB := peerlab.NewServer(fixture)
-	if err := peerB.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, peerB, 2); err != nil {
 		return nil, err
 	}
 	defer peerB.Stop()
@@ -776,7 +909,7 @@ func runMultiPeerInitialSyncAdapter(ctx context.Context, opts Options, fixture *
 
 func runLongChainAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	server := peerlab.NewServer(fixture)
-	if err := server.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
 		return nil, err
 	}
 	defer server.Stop()
@@ -810,7 +943,7 @@ func runLargeBatchProgressAdapter(ctx context.Context, opts Options, fixture *ch
 	server := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		DelayOnceByCommand: map[string]time.Duration{"cfheaders": recoverableDelay(opts)},
 	}))
-	if err := server.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
 		return nil, err
 	}
 	defer server.Stop()
@@ -842,7 +975,7 @@ func runLargeBatchProgressAdapter(ctx context.Context, opts Options, fixture *ch
 
 func runCFHeadersBoundaryAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
 	server := peerlab.NewServer(fixture)
-	if err := server.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
 		return nil, err
 	}
 	defer server.Stop()
@@ -886,7 +1019,7 @@ func runFilterHeaderConflictAdapter(ctx context.Context, opts Options, fixture *
 
 func runFilterHeaderConflictAtHeightAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture, height uint32, specs []resultSpec) ([]score.Result, error) {
 	honest := peerlab.NewServer(fixture)
-	if err := honest.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, honest, 1); err != nil {
 		return nil, err
 	}
 	defer honest.Stop()
@@ -894,30 +1027,20 @@ func runFilterHeaderConflictAtHeightAdapter(ctx context.Context, opts Options, f
 	liar := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptCFHeaders: map[uint32]bool{height: true},
 	}))
-	if err := liar.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, liar, 2); err != nil {
 		return nil, err
 	}
 	defer liar.Stop()
 
 	client := api.NewClient(opts.AdapterURL)
-	req := api.ConfigureRequest{
-		Network: "regtest",
-		DataDir: opts.DataDir,
-		Peers: []api.PeerConfig{{
-			ID:      "honest-cfheaders",
-			Address: honest.Addr(),
-		}, {
-			ID:      "liar-cfheaders",
-			Address: liar.Addr(),
-		}},
-		RequiredPeers:  2,
-		AllowDiscovery: false,
-	}
-	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
-		return nil, fmt.Errorf("configure adapter: %w", err)
-	}
-	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
-		return nil, fmt.Errorf("start adapter: %w", err)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "honest-cfheaders",
+		Address: honest.Addr(),
+	}, {
+		ID:      "liar-cfheaders",
+		Address: liar.Addr(),
+	}}, 2); err != nil {
+		return nil, err
 	}
 	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
 
@@ -957,7 +1080,7 @@ func runBadCFCheckptWithCorruptionAdapter(ctx context.Context, opts Options, fix
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptCFCheckpts: corrupt,
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1031,7 +1154,7 @@ func runBadPrevFilterHeaderWithSpecsAdapter(ctx context.Context, opts Options, f
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptPrevFilterHeader: corrupt,
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1069,7 +1192,7 @@ func runEmptyCFHeadersAdapter(ctx context.Context, opts Options, fixture *chainl
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		EmptyCFHeaders: map[uint32]bool{0: true, 1: true, wire.CFCheckptInterval: true},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1128,7 +1251,7 @@ func runWrongFilterTypeAdapter(ctx context.Context, opts Options, fixture *chain
 			"cfheaders": 99,
 		},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1200,27 +1323,17 @@ func runBadCFilterAtHeightAdapter(ctx context.Context, opts Options, fixture *ch
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptCFilters: map[uint32]bool{height: true},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
 
 	client := api.NewClient(opts.AdapterURL)
-	req := api.ConfigureRequest{
-		Network: "regtest",
-		DataDir: opts.DataDir,
-		Peers: []api.PeerConfig{{
-			ID:      "bad-cfilter",
-			Address: bad.Addr(),
-		}},
-		RequiredPeers:  1,
-		AllowDiscovery: false,
-	}
-	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
-		return nil, fmt.Errorf("configure adapter: %w", err)
-	}
-	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
-		return nil, fmt.Errorf("start adapter: %w", err)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "bad-cfilter",
+		Address: bad.Addr(),
+	}}, 1); err != nil {
+		return nil, err
 	}
 	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
 
@@ -1256,7 +1369,7 @@ func runWrongCFilterBlockHashAdapter(ctx context.Context, opts Options, fixture 
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		WrongCFilterBlockHash: map[uint32]bool{2: true},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1312,7 +1425,7 @@ func runInvalidDownloadedBlockAdapter(ctx context.Context, opts Options, fixture
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		CorruptBlocks: map[uint32]bool{1: true},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1386,7 +1499,7 @@ func runUnresponsivePeerAdapter(ctx context.Context, opts Options, fixture *chai
 	bad := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		DelayByCommand: map[string]time.Duration{"headers": unresponsiveDelay(opts)},
 	}))
-	if err := bad.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, bad, 1); err != nil {
 		return nil, err
 	}
 	defer bad.Stop()
@@ -1436,27 +1549,17 @@ func runFilterHeaderOutageAdapter(ctx context.Context, opts Options, fixture *ch
 	peer := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		DelayOnceByCommand: map[string]time.Duration{"cfheaders": recoverableDelay(opts)},
 	}))
-	if err := peer.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, peer, 1); err != nil {
 		return nil, err
 	}
 	defer peer.Stop()
 
 	client := api.NewClient(opts.AdapterURL)
-	req := api.ConfigureRequest{
-		Network: "regtest",
-		DataDir: opts.DataDir,
-		Peers: []api.PeerConfig{{
-			ID:      "flaky-cfheaders",
-			Address: peer.Addr(),
-		}},
-		RequiredPeers:  1,
-		AllowDiscovery: false,
-	}
-	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
-		return nil, fmt.Errorf("configure adapter: %w", err)
-	}
-	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
-		return nil, fmt.Errorf("start adapter: %w", err)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "flaky-cfheaders",
+		Address: peer.Addr(),
+	}}, 1); err != nil {
+		return nil, err
 	}
 	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
 
@@ -1479,27 +1582,17 @@ func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *c
 	peer := peerlab.NewServer(fixture, peerlab.WithBehavior(peerlab.Behavior{
 		DelayOnceByCommand: map[string]time.Duration{"block": recoverableDelay(opts)},
 	}))
-	if err := peer.Start("127.0.0.1:0"); err != nil {
+	if err := startInSelectedEnvironment(opts, peer, 1); err != nil {
 		return nil, err
 	}
 	defer peer.Stop()
 
 	client := api.NewClient(opts.AdapterURL)
-	req := api.ConfigureRequest{
-		Network: "regtest",
-		DataDir: opts.DataDir,
-		Peers: []api.PeerConfig{{
-			ID:      "flaky-block",
-			Address: peer.Addr(),
-		}},
-		RequiredPeers:  1,
-		AllowDiscovery: false,
-	}
-	if err := client.PostJSON(ctx, "/configure", req, nil); err != nil {
-		return nil, fmt.Errorf("configure adapter: %w", err)
-	}
-	if err := client.PostJSON(ctx, "/start", map[string]string{}, nil); err != nil {
-		return nil, fmt.Errorf("start adapter: %w", err)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "flaky-block",
+		Address: peer.Addr(),
+	}}, 1); err != nil {
+		return nil, err
 	}
 	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
 
@@ -1537,10 +1630,21 @@ func runBlockDownloadOutageAdapter(ctx context.Context, opts Options, fixture *c
 }
 
 func configureAndStart(ctx context.Context, client *api.Client, opts Options, peers []api.PeerConfig, requiredPeers uint32) error {
+	env, err := environment.Lookup(opts.Environment)
+	if err != nil {
+		return err
+	}
+	apiEnv := api.EnvironmentFromDefinition(env)
+	apiEnv.ProxyAddress = opts.ProxyAddress
+	enriched, err := enrichPeerConfigs(opts, peers)
+	if err != nil {
+		return err
+	}
 	req := api.ConfigureRequest{
 		Network:        "regtest",
 		DataDir:        opts.DataDir,
-		Peers:          peers,
+		Environment:    apiEnv,
+		Peers:          enriched,
 		RequiredPeers:  requiredPeers,
 		AllowDiscovery: false,
 	}
@@ -1551,6 +1655,47 @@ func configureAndStart(ctx context.Context, client *api.Client, opts Options, pe
 		return fmt.Errorf("start adapter: %w", err)
 	}
 	return nil
+}
+
+func startInSelectedEnvironment(opts Options, server *peerlab.Server, index int) error {
+	env, err := environment.Lookup(opts.Environment)
+	if err != nil {
+		return err
+	}
+	_, err = server.StartInEnvironment(env, index)
+	return err
+}
+
+func enrichPeerConfigs(opts Options, peers []api.PeerConfig) ([]api.PeerConfig, error) {
+	env, err := environment.Lookup(opts.Environment)
+	if err != nil {
+		return nil, err
+	}
+	enriched := make([]api.PeerConfig, len(peers))
+	for i, peer := range peers {
+		enriched[i] = peer
+		if enriched[i].AddressType == "" {
+			enriched[i].AddressType = string(env.AddressType)
+		}
+		if enriched[i].Transport == "" {
+			enriched[i].Transport = string(env.Transport)
+		}
+		if enriched[i].ProxyAddress == "" {
+			enriched[i].ProxyAddress = opts.ProxyAddress
+		}
+		if enriched[i].Identity == "" {
+			enriched[i].Identity = peerIdentityHost(peer.Address)
+		}
+	}
+	return enriched, nil
+}
+
+func peerIdentityHost(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err == nil {
+		return host
+	}
+	return address
 }
 
 func requireKnownBlockHashes(ctx context.Context, client jsonPoster, fixture *chainlab.Fixture, heights []uint32) error {

@@ -186,3 +186,36 @@ func TestHarnessPassesAgainstFakeAdapter(t *testing.T) {
 		t.Fatalf("fake adapter should produce a green implemented subset, got %s", summary.Color)
 	}
 }
+
+func TestHarnessSkipsOverlayWithoutActiveLab(t *testing.T) {
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	summary, err := harness.Run(context.Background(), harness.Options{
+		AdapterURL:  server.URL,
+		DataDir:     t.TempDir(),
+		Environment: "tor-v3",
+	})
+	if err != nil {
+		t.Fatalf("run harness: %v", err)
+	}
+	if summary.Color != score.Green {
+		t.Fatalf("overlay lab absence should not be a BIP failure, got %s", summary.Color)
+	}
+	found := false
+	for _, result := range summary.Results {
+		if result.ID == "env.tor_v3.full_matrix" {
+			found = true
+			if result.Status != score.Unsupported {
+				t.Fatalf("tor-v3 status = %s, want unsupported", result.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("tor-v3 environment result missing")
+	}
+}

@@ -14,18 +14,24 @@ import (
 func main() {
 	var adapterURL string
 	var dataDir string
+	var environmentID string
 	var outDir string
+	var proxyAddress string
 	var timeout time.Duration
 	flag.StringVar(&adapterURL, "adapter-url", "", "base URL of the implementation adapter")
 	flag.StringVar(&dataDir, "data-dir", "", "adapter data directory")
+	flag.StringVar(&environmentID, "environment", "ipv4", "test environment: ipv4, ipv6, tor-v3, i2p, or cjdns")
 	flag.StringVar(&outDir, "out", "run-artifacts/latest", "directory for reports")
+	flag.StringVar(&proxyAddress, "proxy-address", "", "SOCKS, SAM, or overlay proxy address for the selected environment")
 	flag.DurationVar(&timeout, "timeout", time.Minute, "per-scenario timeout")
 	flag.Parse()
 
 	summary, err := harness.Run(context.Background(), harness.Options{
-		AdapterURL: adapterURL,
-		DataDir:    dataDir,
-		Timeout:    timeout,
+		AdapterURL:   adapterURL,
+		DataDir:      dataDir,
+		Environment:  environmentID,
+		ProxyAddress: proxyAddress,
+		Timeout:      timeout,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness failed: %v\n", err)

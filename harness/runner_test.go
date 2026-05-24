@@ -34,6 +34,13 @@ func TestRunWithoutAdapterReportsSkippedAdapter(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnknownEnvironment(t *testing.T) {
+	_, err := Run(context.Background(), Options{Environment: "bogus"})
+	if err == nil {
+		t.Fatalf("unknown environment unexpectedly succeeded")
+	}
+}
+
 func TestWaitForAdapterTipTimesOut(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()

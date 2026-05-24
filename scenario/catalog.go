@@ -136,6 +136,14 @@ func neutrinoBaseline() []Definition {
 
 func conformanceScenarios() []Definition {
 	return []Definition{
+		{ID: "env.ipv4.full_matrix", Title: "full matrix over IPv4 clear TCP", Level: score.Info, Source: SourceConformance},
+		{ID: "env.ipv6.full_matrix", Title: "full matrix over IPv6 clear TCP", Level: score.Info, Source: SourceConformance},
+		{ID: "env.tor_v3.full_matrix", Title: "full matrix over Tor v3 onion services", Level: score.Info, Source: SourceConformance},
+		{ID: "env.i2p.full_matrix", Title: "full matrix over I2P destinations", Level: score.Info, Source: SourceConformance},
+		{ID: "env.cjdns.full_matrix", Title: "full matrix over cjdns IPv6 overlay", Level: score.Info, Source: SourceConformance},
+		{ID: "peer.identity_distinct_ipv4", Title: "peerlab uses distinct IPv4 peer identities", Level: score.Info, Source: SourceConformance},
+		{ID: "peer.identity_distinct_ipv6", Title: "peerlab uses distinct IPv6 peer identities", Level: score.Info, Source: SourceConformance},
+		{ID: "peer.identity_distinct_overlay", Title: "overlay peers expose distinct peer identities", Level: score.Info, Source: SourceConformance},
 		{ID: "bip158.coinbase_output_included", Title: "coinbase output is included in basic filter", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.coinbase_input_excluded", Title: "coinbase input script is excluded from basic filter", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.prevout_legacy_included", Title: "legacy input prevout script is included", Level: score.Must, Source: SourceConformance},
