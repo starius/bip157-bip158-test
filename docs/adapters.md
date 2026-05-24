@@ -115,3 +115,14 @@ The open P2P compact-filter PR branch can be evaluated as
 Until that branch is stable enough to pin and run through the adapter API, it
 is documented as an experimental target rather than scored in the strict
 green/orange/red matrix.
+
+The evaluated PR branch targets .NET 10. The Nix shell includes
+`dotnet-sdk_10` so future Wasabi adapter experiments can build with the SDK
+requested by `global.json`.
+
+Current strict-adapter blocker: the Wasabi client startup path still constructs
+and monitors a Bitcoin RPC client, then uses P2P compact filters as a fallback
+when RPC filter support is unavailable. Its regtest P2P helper also connects to
+`Network.RegTest.DefaultPort` rather than to harness-supplied peers. A strict
+adapter therefore needs either a small Wasabi-library harness that bypasses
+that app startup path or upstream support for explicit regtest P2P peers.

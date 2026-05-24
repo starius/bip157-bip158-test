@@ -18,6 +18,7 @@
             packages = [
               pkgs.bitcoind
               pkgs.cargo
+              pkgs.dotnet-sdk_10
               pkgs.go
               pkgs.gotestsum
               pkgs.iproute2
