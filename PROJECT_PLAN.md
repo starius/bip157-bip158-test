@@ -70,6 +70,60 @@ Tasks:
 5. Record cases that remain blocked after reasonable debugging in
    `VALIDATION_REPORT.md` and `BIP157_BIP158_FINDINGS.md`.
 
+Backend-specific next probes:
+
+- Kyoto:
+  - Keep `/list-peers` available even when Kyoto's `peer_info()` call fails.
+    Return configured peers, last successful peer state, and the latest
+    requester or event-loop error instead of HTTP 503.
+  - Add adapter-side tracking for disconnect time, last validation error,
+    last bad P2P command observed by peerlab, and whether the peer was retried.
+  - Patch Kyoto if needed to expose per-peer disconnect reason, bad-peer or
+    ban state, and compact-filter validation errors through a public debug API.
+  - Inspect Kyoto's stored header graph and compact-filter header chain after
+    bad `cfheaders` and bad `cfilter` rows. Record whether the bad data was
+    persisted, ignored, or left pending.
+  - After observability is fixed, patch bad `cfcheckpt`, bad `cfheaders`, bad
+    `cfilter`, wrong filter type, and invalid downloaded block handling.
+- Wasabi:
+  - Treat the adapter as sufficiently observable for normal sync. The remaining
+    work is mostly in the patched P2P compact-filter code.
+  - Patch the Wasabi P2P code to surface validation failures for bad
+    `cfcheckpt`, bad `PrevFilterHeader`, malformed GCS payloads, wrong filter
+    types, wrong block hashes, unresponsive peers, scrambled headers, and
+    invalid downloaded blocks.
+  - Record whether each failure causes retry, disconnect, ban, rejection, or
+    silent acceptance. Expose that classification through `/list-peers`.
+  - Keep every Wasabi library change as a patch under `nix/patches/wasabi`
+    with an upstream-quality explainer.
+- Neutrino:
+  - Add a debug endpoint or report attachment that reads Neutrino's stored
+    header tip, filter-header tip, ban state, and peer state after each failed
+    scenario.
+  - If public APIs are insufficient, read Neutrino's on-disk stores directly
+    from the configured adapter data directory or add a small local library
+    patch to expose the needed sync state.
+  - Capture the exact disconnect reason after peerlab sends the first
+    2000-header page. Distinguish adapter misconfiguration, peerlab protocol
+    incompatibility, and Neutrino header-validation failure.
+  - Compare peerlab's header-pagination transcript with the behavior of the
+    nodes used by Neutrino's SimNet/rpctest tests.
+  - Re-test relevant open PRs only after the root cause is known, so the report
+    can say whether a PR fixes the specific failure rather than a broad class
+    of sync issues.
+- Nakamoto:
+  - Add a debug endpoint or storage probe for Nakamoto's chain tip,
+    compact-filter header tip, peer-manager state, outstanding request state,
+    and compact-filter manager errors.
+  - If the public handle remains too coarse, inspect Nakamoto's store directly
+    or patch the library to expose the needed chain and compact-filter state.
+  - Explain why the adapter often requests `getcfilters` for regtest genesis
+    and does not advance to the height-2005 header chain.
+  - Verify that the adapter is putting Nakamoto into strict regtest,
+    connect-only mode with the harness-supplied peers and no discovery.
+  - Once the startup blocker is fixed, rerun the adversarial rows before
+    classifying any compact-filter behavior as a library bug.
+
 ## Workstream 2: Revive Remaining Skipped Rows
 
 Still skipped in the fake-adapter run:
