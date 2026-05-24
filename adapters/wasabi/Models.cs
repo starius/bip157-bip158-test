@@ -78,6 +78,20 @@ internal sealed record ListPeersResponse(
     [property: JsonPropertyName("peers")] PeerState[] Peers);
 
 /// <summary>
+/// Describes support for one address environment.
+/// </summary>
+internal sealed record EnvironmentCapability(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("supported")] bool Supported,
+    [property: JsonPropertyName("reason")] string Reason = "");
+
+/// <summary>
+/// Reports the address environments this adapter is willing to run.
+/// </summary>
+internal sealed record CapabilitiesResponse(
+    [property: JsonPropertyName("environments")] EnvironmentCapability[] Environments);
+
+/// <summary>
 /// Minimal liveness and state response.
 /// </summary>
 internal sealed record HealthResponse(

@@ -47,4 +47,14 @@ public sealed class AdapterStateTests
 
         Assert.Equal(7u, state.SnapshotWatches()[0].NextScanHeight);
     }
+
+    [Fact]
+    public void CapabilitiesAreExplicitIpv4Only()
+    {
+        var caps = AdapterCapabilities.ClearIPv4Only();
+
+        Assert.Equal(5, caps.Environments.Length);
+        Assert.Contains(caps.Environments, x => x.Id == "ipv4" && x.Supported);
+        Assert.All(caps.Environments.Where(x => x.Id != "ipv4"), x => Assert.False(x.Supported));
+    }
 }

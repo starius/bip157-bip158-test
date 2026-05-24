@@ -31,6 +31,21 @@ func TestP2WPKHAddressRejectsUnsupportedScripts(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesAreExplicitIPv4Only(t *testing.T) {
+	caps := clearIPv4Capabilities()
+	if len(caps.Environments) != 5 {
+		t.Fatalf("capabilities = %d, want 5", len(caps.Environments))
+	}
+	for _, cap := range caps.Environments {
+		if cap.ID == "ipv4" && !cap.Supported {
+			t.Fatalf("ipv4 should be supported")
+		}
+		if cap.ID != "ipv4" && cap.Supported {
+			t.Fatalf("%s should be unsupported until validated", cap.ID)
+		}
+	}
+}
+
 func TestRecordFilteredBlockFindsOutputsAndSpends(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {

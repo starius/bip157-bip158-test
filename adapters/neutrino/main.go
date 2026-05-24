@@ -52,9 +52,20 @@ func newAdapter() *adapter {
 	}
 }
 
+func clearIPv4Capabilities() api.CapabilitiesResponse {
+	return api.CapabilitiesResponse{Environments: []api.EnvironmentCapability{
+		{ID: "ipv4", Supported: true},
+		{ID: "ipv6", Supported: false, Reason: "adapter has not been validated with IPv6 peer identities"},
+		{ID: "tor-v3", Supported: false, Reason: "adapter does not configure Tor proxying"},
+		{ID: "i2p", Supported: false, Reason: "adapter does not configure I2P proxying"},
+		{ID: "cjdns", Supported: false, Reason: "adapter has not been validated with cjdns"},
+	}}
+}
+
 func (a *adapter) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/capabilities", a.handleCapabilities)
 	mux.HandleFunc("/configure", a.handleConfigure)
 	mux.HandleFunc("/start", a.handleStart)
 	mux.HandleFunc("/stop", a.handleStop)
@@ -64,6 +75,13 @@ func (a *adapter) routes() http.Handler {
 	mux.HandleFunc("/matches", a.handleMatches)
 	mux.HandleFunc("/list-peers", a.handleListPeers)
 	return mux
+}
+
+func (a *adapter) handleCapabilities(w http.ResponseWriter, r *http.Request) {
+	if !requirePost(w, r) {
+		return
+	}
+	writeJSON(w, clearIPv4Capabilities())
 }
 
 func (a *adapter) handleHealth(w http.ResponseWriter, r *http.Request) {

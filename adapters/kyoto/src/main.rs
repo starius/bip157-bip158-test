@@ -100,6 +100,21 @@ struct HealthResponse {
     status: String,
 }
 
+/// One address environment capability reported to the harness.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct EnvironmentCapability {
+    id: String,
+    supported: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    reason: String,
+}
+
+/// Optional capability response for address environments.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CapabilitiesResponse {
+    environments: Vec<EnvironmentCapability>,
+}
+
 /// Shared adapter state guarded by an async mutex.
 #[derive(Default)]
 struct AdapterState {
@@ -131,6 +146,7 @@ async fn main() {
     let state = Arc::new(Mutex::new(AdapterState::default()));
     let app = Router::new()
         .route("/health", post(health))
+        .route("/capabilities", post(capabilities))
         .route("/configure", post(configure))
         .route("/start", post(start))
         .route("/stop", post(stop))
@@ -144,6 +160,42 @@ async fn main() {
     let listener = TcpListener::bind(&listen).await.expect("listen");
     println!("listening=http://{}", listener.local_addr().expect("addr"));
     axum::serve(listener, app).await.expect("serve");
+}
+
+async fn capabilities() -> Json<CapabilitiesResponse> {
+    Json(clear_ipv4_capabilities())
+}
+
+fn clear_ipv4_capabilities() -> CapabilitiesResponse {
+    CapabilitiesResponse {
+        environments: vec![
+            EnvironmentCapability {
+                id: "ipv4".to_string(),
+                supported: true,
+                reason: String::new(),
+            },
+            EnvironmentCapability {
+                id: "ipv6".to_string(),
+                supported: false,
+                reason: "adapter has not been validated with IPv6 peer identities".to_string(),
+            },
+            EnvironmentCapability {
+                id: "tor-v3".to_string(),
+                supported: false,
+                reason: "adapter does not configure Tor proxying".to_string(),
+            },
+            EnvironmentCapability {
+                id: "i2p".to_string(),
+                supported: false,
+                reason: "adapter does not configure I2P proxying".to_string(),
+            },
+            EnvironmentCapability {
+                id: "cjdns".to_string(),
+                supported: false,
+                reason: "adapter has not been validated with cjdns".to_string(),
+            },
+        ],
+    }
 }
 
 async fn health(State(state): State<Shared>) -> Json<HealthResponse> {
@@ -513,5 +565,20 @@ mod tests {
         add_match(&mut state, tx_match.clone());
         add_match(&mut state, tx_match);
         assert_eq!(state.matches.len(), 1);
+    }
+
+    #[test]
+    fn capabilities_are_explicit_ipv4_only() {
+        let caps = clear_ipv4_capabilities();
+        assert_eq!(caps.environments.len(), 5);
+        assert!(caps
+            .environments
+            .iter()
+            .any(|cap| cap.id == "ipv4" && cap.supported));
+        assert!(caps
+            .environments
+            .iter()
+            .filter(|cap| cap.id != "ipv4")
+            .all(|cap| !cap.supported));
     }
 }
