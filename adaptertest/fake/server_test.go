@@ -187,6 +187,39 @@ func TestHarnessPassesAgainstFakeAdapter(t *testing.T) {
 	}
 }
 
+func TestHarnessPassesAgainstFakeAdapterIPv6(t *testing.T) {
+	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	summary, err := harness.Run(context.Background(), harness.Options{
+		AdapterURL:  server.URL,
+		DataDir:     t.TempDir(),
+		Environment: "ipv6",
+	})
+	if err != nil {
+		t.Fatalf("run harness: %v", err)
+	}
+	if summary.Color != score.Green {
+		t.Fatalf("fake adapter over ipv6 should stay green, got %s", summary.Color)
+	}
+	found := false
+	for _, result := range summary.Results {
+		if result.ID == "env.ipv6.full_matrix" {
+			found = true
+			if result.Status != score.Pass {
+				t.Fatalf("ipv6 status = %s, want pass", result.Status)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("ipv6 environment result missing")
+	}
+}
+
 func TestHarnessSkipsOverlayWithoutActiveLab(t *testing.T) {
 	fixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
 	if err != nil {
