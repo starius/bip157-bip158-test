@@ -57,6 +57,16 @@ func TestRunRejectsUnknownTorLab(t *testing.T) {
 	}
 }
 
+func TestRunRequiresDistinctIdentities(t *testing.T) {
+	_, err := Run(context.Background(), Options{
+		Environment:               "ipv6",
+		RequireDistinctIdentities: true,
+	})
+	if err == nil {
+		t.Fatalf("shared ipv6 loopback unexpectedly satisfied strict identity mode")
+	}
+}
+
 func TestDistinctIdentityCapabilityFollowsAllocator(t *testing.T) {
 	ipv6, err := environment.Lookup("ipv6")
 	if err != nil {

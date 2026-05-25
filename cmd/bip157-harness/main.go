@@ -21,6 +21,7 @@ func main() {
 	var torLab string
 	var chutneyPath string
 	var chutneyNet string
+	var requireDistinct bool
 	var timeout time.Duration
 	flag.StringVar(&adapterURL, "adapter-url", "", "base URL of the implementation adapter")
 	flag.StringVar(&addressLab, "address-lab", "loopback", "address allocator: loopback, auto, or linux-iproute")
@@ -31,19 +32,21 @@ func main() {
 	flag.StringVar(&torLab, "tor-lab", "off", "Tor lab mode: off or chutney")
 	flag.StringVar(&chutneyPath, "chutney-path", "", "path to the Chutney source tree; defaults to CHUTNEY_SOURCE")
 	flag.StringVar(&chutneyNet, "chutney-network", "", "Chutney network name for tor-v3; defaults to hs-v3-min")
+	flag.BoolVar(&requireDistinct, "require-distinct-identities", false, "fail if the selected lab cannot give peers distinct identities")
 	flag.DurationVar(&timeout, "timeout", time.Minute, "per-scenario timeout")
 	flag.Parse()
 
 	summary, err := harness.Run(context.Background(), harness.Options{
-		AdapterURL:   adapterURL,
-		AddressLab:   addressLab,
-		DataDir:      dataDir,
-		Environment:  environmentID,
-		ProxyAddress: proxyAddress,
-		TorLab:       torLab,
-		ChutneyPath:  chutneyPath,
-		ChutneyNet:   chutneyNet,
-		Timeout:      timeout,
+		AdapterURL:                adapterURL,
+		AddressLab:                addressLab,
+		DataDir:                   dataDir,
+		Environment:               environmentID,
+		ProxyAddress:              proxyAddress,
+		TorLab:                    torLab,
+		ChutneyPath:               chutneyPath,
+		ChutneyNet:                chutneyNet,
+		RequireDistinctIdentities: requireDistinct,
+		Timeout:                   timeout,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness failed: %v\n", err)

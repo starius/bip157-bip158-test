@@ -24,15 +24,16 @@ import (
 
 // Options configures one black-box conformance run.
 type Options struct {
-	AdapterURL   string
-	DataDir      string
-	Environment  string
-	AddressLab   string
-	ProxyAddress string
-	TorLab       string
-	ChutneyPath  string
-	ChutneyNet   string
-	Timeout      time.Duration
+	AdapterURL                string
+	DataDir                   string
+	Environment               string
+	AddressLab                string
+	ProxyAddress              string
+	TorLab                    string
+	ChutneyPath               string
+	ChutneyNet                string
+	RequireDistinctIdentities bool
+	Timeout                   time.Duration
 
 	addressAllocator addresslab.Allocator
 	torLab           *torlab.Lab
@@ -80,6 +81,9 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 		defer lab.Close()
 		opts.torLab = lab
 		opts.ProxyAddress = lab.SOCKSAddress()
+	}
+	if opts.RequireDistinctIdentities && !runHasDistinctIdentities(env, opts) {
+		return score.Summary{}, fmt.Errorf("%s does not provide distinct peer identities", env.ID)
 	}
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
@@ -1758,6 +1762,13 @@ func hasDistinctPeerIdentities(env environment.Definition, allocator addresslab.
 	default:
 		return env.DistinctPeerIdentities
 	}
+}
+
+func runHasDistinctIdentities(env environment.Definition, opts Options) bool {
+	if env.ID == environment.TorV3 && opts.torLab != nil {
+		return true
+	}
+	return hasDistinctPeerIdentities(env, opts.addressAllocator)
 }
 
 func startInSelectedEnvironment(opts Options, server *peerlab.Server, index int) error {
