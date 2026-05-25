@@ -35,7 +35,27 @@ type Shared = Arc<Mutex<AdapterState>>;
 struct PeerConfig {
     id: String,
     address: String,
+    #[serde(default)]
+    address_type: String,
+    #[serde(default)]
+    transport: String,
+    #[serde(default)]
+    identity: String,
+    #[serde(default)]
+    proxy_address: String,
     trusted: bool,
+}
+
+/// Address environment selected for the current harness run.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct EnvironmentConfig {
+    id: String,
+    address_type: String,
+    transport: String,
+    #[serde(default)]
+    proxy_address: String,
+    #[serde(default)]
+    distinct_peer_identities: bool,
 }
 
 /// Request body for configuring one isolated adapter run.
@@ -43,6 +63,8 @@ struct PeerConfig {
 struct ConfigureRequest {
     network: String,
     data_dir: String,
+    #[serde(default)]
+    environment: EnvironmentConfig,
     peers: Vec<PeerConfig>,
     required_peers: u32,
     allow_discovery: bool,
@@ -95,6 +117,12 @@ struct GetMatchesResponse {
 struct PeerState {
     id: String,
     address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    address_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    identity: String,
     connected: bool,
     banned: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -172,10 +200,10 @@ async fn main() {
 }
 
 async fn capabilities() -> Json<CapabilitiesResponse> {
-    Json(clear_ipv4_capabilities())
+    Json(adapter_capabilities())
 }
 
-fn clear_ipv4_capabilities() -> CapabilitiesResponse {
+fn adapter_capabilities() -> CapabilitiesResponse {
     CapabilitiesResponse {
         environments: vec![
             EnvironmentCapability {
@@ -185,8 +213,8 @@ fn clear_ipv4_capabilities() -> CapabilitiesResponse {
             },
             EnvironmentCapability {
                 id: "ipv6".to_string(),
-                supported: false,
-                reason: "adapter has not been validated with IPv6 peer identities".to_string(),
+                supported: true,
+                reason: String::new(),
             },
             EnvironmentCapability {
                 id: "tor-v3".to_string(),
@@ -260,8 +288,8 @@ async fn start(
         .iter()
         .map(|peer| parse_addr(&peer.address))
         .collect::<Result<Vec<_>, _>>()?;
-    config.domains = vec![Domain::IPV4];
-    config.listen = vec![([127, 0, 0, 1], 0).into()];
+    config.domains = domains_for_environment(&req.environment);
+    config.listen = listen_for_environment(&req.environment);
     config.root = data_root(&req);
     config.verify = true;
     config.limits.max_outbound_peers = req.required_peers.max(1) as usize;
@@ -389,6 +417,7 @@ async fn list_peers(
             guard.config.clone().unwrap_or(ConfigureRequest {
                 network: "regtest".into(),
                 data_dir: String::new(),
+                environment: EnvironmentConfig::default(),
                 peers: Vec::new(),
                 required_peers: 0,
                 allow_discovery: false,
@@ -414,30 +443,56 @@ async fn list_peers(
         .map(|peer| {
             let connected_peer = connected.get(&peer.address);
             let connected = connected_peer.is_some();
-            PeerState {
-                id: peer.id.clone(),
-                address: peer.address.clone(),
-                connected,
-                banned: false,
-                last_error: if connected {
-                    String::new()
-                } else {
-                    "not connected or disconnected".into()
-                },
-                best_height: connected_peer
-                    .map(|p| checked_height(p.height).unwrap_or(u32::MAX))
-                    .or_else(|| {
-                        tip.map(|(height, _, _)| checked_height(height).unwrap_or(u32::MAX))
-                    })
-                    .unwrap_or_default(),
-                best_hash_hex: tip
-                    .as_ref()
-                    .map(|(_, header, _)| header.block_hash().to_string())
-                    .unwrap_or_default(),
-            }
+            let mut state = peer_state_from_config(peer, connected);
+            state.last_error = if connected {
+                String::new()
+            } else {
+                "not connected or disconnected".into()
+            };
+            state.best_height = connected_peer
+                .map(|p| checked_height(p.height).unwrap_or(u32::MAX))
+                .or_else(|| tip.map(|(height, _, _)| checked_height(height).unwrap_or(u32::MAX)))
+                .unwrap_or_default();
+            state.best_hash_hex = tip
+                .as_ref()
+                .map(|(_, header, _)| header.block_hash().to_string())
+                .unwrap_or_default();
+            state
         })
         .collect();
     Ok(Json(ListPeersResponse { peers: states }))
+}
+
+fn peer_state_from_config(peer: &PeerConfig, connected: bool) -> PeerState {
+    PeerState {
+        id: peer.id.clone(),
+        address: peer.address.clone(),
+        address_type: peer.address_type.clone(),
+        transport: peer.transport.clone(),
+        identity: peer.identity.clone(),
+        connected,
+        banned: false,
+        last_error: String::new(),
+        best_height: 0,
+        best_hash_hex: String::new(),
+    }
+}
+
+fn domains_for_environment(environment: &EnvironmentConfig) -> Vec<Domain> {
+    if environment.id == "ipv6" {
+        vec![Domain::IPV6]
+    } else {
+        vec![Domain::IPV4]
+    }
+}
+
+fn listen_for_environment(environment: &EnvironmentConfig) -> Vec<SocketAddr> {
+    let addr = if environment.id == "ipv6" {
+        "[::1]:0"
+    } else {
+        "127.0.0.1:0"
+    };
+    vec![addr.parse().expect("static adapter listen address")]
 }
 
 fn block_loop(state: Shared, blocks: nakamoto_client::chan::Receiver<(Block, Height)>) {
@@ -615,6 +670,7 @@ mod tests {
         let req = ConfigureRequest {
             network: "regtest".into(),
             data_dir: "nakamoto-suite".into(),
+            environment: EnvironmentConfig::default(),
             peers: Vec::new(),
             required_peers: 1,
             allow_discovery: false,
@@ -623,8 +679,8 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_explicit_ipv4_only() {
-        let caps = clear_ipv4_capabilities();
+    fn capabilities_support_ipv4_and_ipv6() {
+        let caps = adapter_capabilities();
         assert_eq!(caps.environments.len(), 5);
         assert!(caps
             .environments
@@ -633,7 +689,49 @@ mod tests {
         assert!(caps
             .environments
             .iter()
-            .filter(|cap| cap.id != "ipv4")
+            .any(|cap| cap.id == "ipv6" && cap.supported));
+        assert!(caps
+            .environments
+            .iter()
+            .filter(|cap| cap.id != "ipv4" && cap.id != "ipv6")
             .all(|cap| !cap.supported));
+    }
+
+    #[test]
+    fn bracketed_ipv6_peer_address_parses() {
+        let addr = parse_addr("[fd7a:b157:b158::1]:18444").expect("ipv6");
+        assert!(addr.is_ipv6());
+    }
+
+    #[test]
+    fn ipv6_environment_uses_ipv6_domain_and_listener() {
+        let env = EnvironmentConfig {
+            id: "ipv6".into(),
+            address_type: "ipv6".into(),
+            transport: "tcp".into(),
+            proxy_address: String::new(),
+            distinct_peer_identities: true,
+        };
+        assert_eq!(domains_for_environment(&env), vec![Domain::IPV6]);
+        assert!(listen_for_environment(&env)[0].is_ipv6());
+    }
+
+    #[test]
+    fn peer_state_preserves_ipv6_metadata() {
+        let peer = PeerConfig {
+            id: "ipv6-peer".into(),
+            address: "[fd7a:b157:b158::1]:18444".into(),
+            address_type: "ipv6".into(),
+            transport: "tcp".into(),
+            identity: "fd7a:b157:b158::1".into(),
+            proxy_address: String::new(),
+            trusted: true,
+        };
+        let state = peer_state_from_config(&peer, true);
+        assert_eq!(state.address, "[fd7a:b157:b158::1]:18444");
+        assert_eq!(state.address_type, "ipv6");
+        assert_eq!(state.transport, "tcp");
+        assert_eq!(state.identity, "fd7a:b157:b158::1");
+        assert!(state.connected);
     }
 }
