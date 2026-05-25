@@ -50,6 +50,13 @@ func TestRunRejectsUnknownAddressLab(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnknownTorLab(t *testing.T) {
+	_, err := Run(context.Background(), Options{TorLab: "bogus"})
+	if err == nil {
+		t.Fatalf("unknown tor lab unexpectedly succeeded")
+	}
+}
+
 func TestDistinctIdentityCapabilityFollowsAllocator(t *testing.T) {
 	ipv6, err := environment.Lookup("ipv6")
 	if err != nil {

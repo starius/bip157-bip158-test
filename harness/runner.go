@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/scenario"
 	"github.com/bip157-bip158-test/suite/score"
+	"github.com/bip157-bip158-test/suite/torlab"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -27,9 +29,13 @@ type Options struct {
 	Environment  string
 	AddressLab   string
 	ProxyAddress string
+	TorLab       string
+	ChutneyPath  string
+	ChutneyNet   string
 	Timeout      time.Duration
 
 	addressAllocator addresslab.Allocator
+	torLab           *torlab.Lab
 }
 
 type adapterScenario struct {
@@ -57,12 +63,24 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 	if err != nil {
 		return score.Summary{}, err
 	}
+	if opts.TorLab != "" && opts.TorLab != "off" && opts.TorLab != "chutney" {
+		return score.Summary{}, fmt.Errorf("unknown tor lab %q", opts.TorLab)
+	}
 	allocator, err := addresslab.New(opts.AddressLab)
 	if err != nil {
 		return score.Summary{}, err
 	}
 	defer allocator.Close()
 	opts.addressAllocator = allocator
+	if env.ID == environment.TorV3 && opts.TorLab == "chutney" {
+		lab, err := startTorLab(ctx, opts)
+		if err != nil {
+			return score.Summary{}, err
+		}
+		defer lab.Close()
+		opts.torLab = lab
+		opts.ProxyAddress = lab.SOCKSAddress()
+	}
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
 		return score.Summary{}, err
@@ -70,7 +88,7 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 
 	results := catalogAsSkipped()
 	upsert(&results, runBIP158Internal(fixture)...)
-	upsert(&results, peerIdentityResults(env, fixture, opts.addressAllocator)...)
+	upsert(&results, peerIdentityResults(env, fixture, opts)...)
 
 	if opts.AdapterURL != "" {
 		longFixture, err := chainlab.BuildLongWalletFixture(chainlab.DefaultLongChainHeight)
@@ -89,7 +107,7 @@ func Run(ctx context.Context, opts Options) (score.Summary, error) {
 			upsert(&results, skippedAdapterScenarios(scenarios, evidence)...)
 			return score.Summarize(results), nil
 		}
-		if !env.IsClearTCP() {
+		if !env.IsClearTCP() && opts.torLab == nil {
 			evidence := "overlay lab is not active for this environment"
 			upsert(&results, environmentResult(env, score.Unsupported, evidence))
 			upsert(&results, skippedAdapterScenarios(scenarios, evidence)...)
@@ -569,15 +587,15 @@ func resultsFromSpecs(specs []resultSpec, status score.Status, evidence string) 
 	return results
 }
 
-func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture, allocator addresslab.Allocator) []score.Result {
+func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture, opts Options) []score.Result {
 	switch env.ID {
 	case environment.IPv4:
-		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
+		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(opts.addressAllocator))
 		if _, err := first.StartInEnvironment(env, 1); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
 		}
 		defer first.Stop()
-		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
+		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(opts.addressAllocator))
 		if _, err := second.StartInEnvironment(env, 2); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Fail, err.Error())}
 		}
@@ -589,12 +607,12 @@ func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture, 
 		}
 		return []score.Result{identityResult("peer.identity_distinct_ipv4", score.Unsupported, "host only allowed shared IPv4 loopback identity")}
 	case environment.IPv6:
-		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
+		first := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(opts.addressAllocator))
 		if _, err := first.StartInEnvironment(env, 1); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
 		}
 		defer first.Stop()
-		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(allocator))
+		second := peerlab.NewServer(fixture, peerlab.WithAddressAllocator(opts.addressAllocator))
 		if _, err := second.StartInEnvironment(env, 2); err != nil {
 			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Fail, err.Error())}
 		}
@@ -605,8 +623,44 @@ func peerIdentityResults(env environment.Definition, fixture *chainlab.Fixture, 
 			return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Pass, "peerlab allocated separate IPv6 identities")}
 		}
 		return []score.Result{identityResult("peer.identity_distinct_ipv6", score.Unsupported, "IPv6 loopback uses ::1 unless a lab provides extra identities")}
+	case environment.TorV3:
+		if opts.torLab == nil {
+			return []score.Result{identityResult(
+				"peer.identity_distinct_overlay",
+				score.Unsupported,
+				"overlay identity checks require the environment lab",
+			)}
+		}
+		first := peerlab.NewServer(fixture)
+		if err := startInSelectedEnvironment(opts, first, 1); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_overlay", score.Fail, err.Error())}
+		}
+		defer first.Stop()
+		second := peerlab.NewServer(fixture)
+		if err := startInSelectedEnvironment(opts, second, 2); err != nil {
+			return []score.Result{identityResult("peer.identity_distinct_overlay", score.Fail, err.Error())}
+		}
+		defer second.Stop()
+		firstHost := peerIdentityHost(first.Addr())
+		secondHost := peerIdentityHost(second.Addr())
+		if first.Identity().Distinct && second.Identity().Distinct && firstHost != secondHost {
+			return []score.Result{identityResult(
+				"peer.identity_distinct_overlay",
+				score.Pass,
+				"peerlab allocated separate Tor v3 onion identities",
+			)}
+		}
+		return []score.Result{identityResult(
+			"peer.identity_distinct_overlay",
+			score.Unsupported,
+			"Tor lab did not provide separate onion identities",
+		)}
 	default:
-		return []score.Result{identityResult("peer.identity_distinct_overlay", score.Unsupported, "overlay identity checks require the environment lab")}
+		return []score.Result{identityResult(
+			"peer.identity_distinct_overlay",
+			score.Unsupported,
+			"overlay identity checks require the environment lab",
+		)}
 	}
 }
 
@@ -1646,6 +1700,9 @@ func configureAndStart(ctx context.Context, client *api.Client, opts Options, pe
 	}
 	apiEnv := api.EnvironmentFromDefinition(env)
 	apiEnv.DistinctPeerIdentities = hasDistinctPeerIdentities(env, opts.addressAllocator)
+	if env.ID == environment.TorV3 && opts.torLab != nil {
+		apiEnv.DistinctPeerIdentities = true
+	}
 	apiEnv.ProxyAddress = opts.ProxyAddress
 	enriched, err := enrichPeerConfigs(opts, peers)
 	if err != nil {
@@ -1666,6 +1723,23 @@ func configureAndStart(ctx context.Context, client *api.Client, opts Options, pe
 		return fmt.Errorf("start adapter: %w", err)
 	}
 	return nil
+}
+
+func startTorLab(ctx context.Context, opts Options) (*torlab.Lab, error) {
+	dir := filepath.Join(opts.DataDir, "torlab")
+	if opts.DataDir == "" {
+		var err error
+		dir, err = os.MkdirTemp("", "bip157-harness-torlab-*")
+		if err != nil {
+			return nil, fmt.Errorf("create tor lab dir: %w", err)
+		}
+	}
+	return torlab.Start(ctx, torlab.Options{
+		DataDir:     dir,
+		ChutneyPath: opts.ChutneyPath,
+		Network:     opts.ChutneyNet,
+		Command:     nil,
+	})
 }
 
 func hasDistinctPeerIdentities(env environment.Definition, allocator addresslab.Allocator) bool {
@@ -1690,6 +1764,20 @@ func startInSelectedEnvironment(opts Options, server *peerlab.Server, index int)
 	env, err := environment.Lookup(opts.Environment)
 	if err != nil {
 		return err
+	}
+	if env.ID == environment.TorV3 && opts.torLab != nil {
+		if err := server.Start("127.0.0.1:0"); err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		service, err := opts.torLab.Expose(ctx, index, server.ListenAddr())
+		if err != nil {
+			_ = server.Stop()
+			return err
+		}
+		server.SetAdvertisedAddress(service.Address, env.AddressType, env.Transport, true)
+		return nil
 	}
 	if opts.addressAllocator != nil {
 		server.SetAddressAllocator(opts.addressAllocator)

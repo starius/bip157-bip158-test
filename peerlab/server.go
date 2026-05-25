@@ -112,6 +112,21 @@ func (s *Server) SetAddressAllocator(allocator addresslab.Allocator) {
 	s.addressAllocator = allocator
 }
 
+// SetAdvertisedAddress records the address an adapter should dial. Overlay
+// labs use it when the local listener is exposed through a different address
+// namespace, such as a Tor v3 onion service.
+func (s *Server) SetAdvertisedAddress(
+	addr string,
+	addressType environment.AddressType,
+	transport environment.Transport,
+	distinct bool,
+) {
+	s.identity.AdvertisedAddress = addr
+	s.identity.AddressType = addressType
+	s.identity.Transport = transport
+	s.identity.Distinct = distinct
+}
+
 // Start begins listening on addr. Use "127.0.0.1:0" to allocate a free port.
 func (s *Server) Start(addr string) error {
 	ln, err := net.Listen("tcp", addr)
@@ -204,6 +219,14 @@ func releaseLease(lease addresslab.Lease) error {
 
 // Addr returns the listener address.
 func (s *Server) Addr() string {
+	if s.identity.AdvertisedAddress != "" {
+		return s.identity.AdvertisedAddress
+	}
+	return s.ListenAddr()
+}
+
+// ListenAddr returns the local TCP listener address.
+func (s *Server) ListenAddr() string {
 	if s.listener == nil {
 		return ""
 	}

@@ -128,6 +128,35 @@ func TestServerStartsWithIPv6FamilyMetadata(t *testing.T) {
 	}
 }
 
+func TestServerAdvertisedAddressOverridesListenAddress(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	server := NewServer(fixture)
+	if err := server.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer server.Stop()
+
+	listen := server.ListenAddr()
+	server.SetAdvertisedAddress(
+		"exampleexampleexample.onion:8333",
+		environment.AddressOnionV3,
+		environment.TransportTorV3,
+		true,
+	)
+	if server.Addr() != "exampleexampleexample.onion:8333" {
+		t.Fatalf("advertised addr = %s", server.Addr())
+	}
+	if server.ListenAddr() != listen {
+		t.Fatalf("listen addr changed from %s to %s", listen, server.ListenAddr())
+	}
+	if !server.Identity().Distinct {
+		t.Fatalf("onion identity should be marked distinct")
+	}
+}
+
 func TestServerRejectsOverlayWithoutLab(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
