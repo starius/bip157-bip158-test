@@ -1,11 +1,12 @@
 # BIP157/BIP158 Conformance Test Suite Plan
 
-Date: 2026-05-24
+Date: 2026-05-25
 
 This is the active plan after Wasabi became a strict adapter target and the
 expanded adversarial rows were run. Completed Nix pinning, adapter scaffolding,
-matrix generation, and already-revived scenarios are intentionally omitted
-from the active task list.
+matrix generation, revived scenarios, IPv6 address-lab support, and the
+Chutney-backed Tor v3 harness are intentionally omitted from the active task
+list.
 
 ## Current State
 
@@ -22,13 +23,17 @@ The suite has:
   matrix generator.
 - Fake, Kyoto, Neutrino, Nakamoto, and Wasabi adapters.
 - Peerlab gives IPv4 peers distinct loopback IP identities with
-  `127.27.0.N`. IPv6 currently binds to `::1`, so IPv6 socket behavior works
-  but distinct IPv6 peer identity is still unsupported without an address lab.
+  `127.27.0.N`.
+- The `addresslab` package supports non-privileged IPv6 loopback runs and a
+  Linux `iproute2` lab that assigns deterministic `fd7a:b157:b158::/64`
+  addresses for distinct IPv6 peer identities.
 - The adapter API, harness, and matrix all understand an explicit environment
   dimension: `ipv4`, `ipv6`, `tor-v3`, `i2p`, and `cjdns`.
-- Overlay lab manifests exist for Tor v3, I2P, and cjdns. Tor has pinned
-  Chutney source available through Nix, but runtime onion-service wiring is
-  not active yet.
+- The `torlab` package starts a private Chutney Tor network, creates ephemeral
+  v3 onion services for peerlab listeners, and passes the Chutney SOCKS
+  endpoint to adapters.
+- Overlay lab manifests exist for I2P and cjdns, but those runtimes are not
+  active yet.
 - Nix-pinned Go, Rust/Cargo, Bitcoin Core, protobuf, .NET 10, Tor, Chutney,
   Java I2P, i2pd, cjdns, iproute2, and helper tooling.
 - A tracked latest matrix in `IMPLEMENTATION_MATRIX.md`.
@@ -37,9 +42,10 @@ The suite has:
 Latest validation summary:
 
 - Fake adapter over IPv4: green, 72 pass and 24 skipped.
-- Fake adapter over IPv6: green, 71 pass, 1 unsupported, and 24 skipped.
+- Fake adapter over IPv6: green, 72 pass and 24 skipped.
+- Fake adapter over Tor v3: green, 72 pass and 24 skipped.
 - Kyoto over IPv4: red, 26 pass, 46 fail, and 24 skipped.
-- Wasabi over IPv4: red, 42 pass, 30 fail, and 24 skipped.
+- Wasabi over IPv4: red, 31 pass, 41 fail, and 24 skipped.
 - Neutrino over IPv4: red, 14 pass, 53 fail, and 29 skipped.
 - Nakamoto over IPv4: red, 13 pass, 54 fail, and 29 skipped.
 - Real-adapter IPv6, Tor v3, I2P, and cjdns rows are capability or lab
@@ -88,10 +94,9 @@ Tasks:
      keep the same peer available and trigger a follow-up request. The client
      fails this row if it reconnects to that peer and requests or accepts BIP157
      data from it again within the test window.
-6. Use the environment identity support from Workstream 6 in empirical bad-peer
-   rows. IPv4 already has distinct peer IPs. IPv6 and Tor identity assertions
-   must stay unsupported until the address lab and Chutney lab provide distinct
-   identities.
+6. Use the IPv4, IPv6, and Tor identity support from Workstream 6 in empirical
+   bad-peer rows. I2P and cjdns identity assertions must stay unsupported until
+   those labs provide active overlay identities.
 7. Record cases that remain blocked after reasonable debugging in
    `VALIDATION_REPORT.md` and `BIP157_BIP158_FINDINGS.md`.
 
@@ -243,105 +248,64 @@ Scenario IDs:
 - `import.sideload_headers_then_p2p_divergence`
 - `storage.partial_write_recovery`
 
-## Workstream 6: Full IPv6 and Tor v3 Runtime
+## Workstream 6: Addressing and Overlay Matrix
 
-Goal: turn the existing environment dimension into real conformance runs for
-IPv6 and Tor v3. IPv4 is already active. I2P and cjdns remain later overlay
-workstreams because they need separate router and namespace runners.
+Goal: keep the existing environment dimension honest across IPv4, IPv6, Tor
+v3, I2P, and cjdns. IPv4, IPv6, and Tor v3 have active harness runtimes. I2P
+and cjdns remain later overlay workstreams because they need separate router
+and namespace runners.
 
 ### IPv6 Address Lab
 
-Current blocker: peerlab can bind IPv6 sockets on `::1`, but all simulated
-peers share the same IPv6 identity. This is enough to prove basic IPv6
-connectivity, but not enough for bad-peer or effective-ban scenarios.
+Completed:
 
-Tasks:
+- `addresslab` has loopback and Linux `iproute2` allocators.
+- `--address-lab` selects `auto`, `loopback`, or `linux-iproute`.
+- `--require-distinct-identities` makes collapsed peer identity a harness
+  failure for rows that need separable peers.
+- The Linux allocator keeps IPv6 `/128` leases until harness shutdown so
+  peerlab listeners cannot lose their assigned addresses between scenarios.
+- The fake adapter passed the full IPv6 matrix with distinct ULA peer
+  identities.
 
-1. Add an `addresslab` package with an explicit allocator interface:
-   `Allocate(env, peerIndex)`, `Release()`, and `Capabilities()`.
-2. Keep a non-privileged fallback allocator that returns `::1` and marks
-   `DistinctPeerIdentities=false`. This keeps ordinary developer runs useful
-   and honest.
-3. Add a Linux `iproute2` allocator for privileged validation runs:
-   - create a deterministic ULA prefix such as `fd7a:b157:b158::/64`;
-   - add one `/128` address per peer to `lo` or a dedicated dummy interface;
-   - bind peerlab listeners to those addresses;
-   - remove every address during cleanup, even after failed scenarios.
-4. Teach `peerlab.StartInEnvironment` to request addresses from the allocator
-   instead of hard-coding `::1` for all IPv6 peers.
-5. Add harness flags for address-lab selection and strict identity behavior:
-   - `--address-lab=auto|loopback|linux-iproute`;
-   - `--require-distinct-identities`, used by bad-peer rows that cannot be
-     interpreted safely when identities collapse.
-6. Update adapter configuration tests so bracketed IPv6 peer addresses,
-   identities, and transcript evidence are preserved end to end.
-7. Enable real adapters for IPv6 only after each adapter proves it can connect
+Remaining:
+
+1. Enable real-adapter IPv6 only after each adapter proves that it can connect
    to bracketed IPv6 peers in connect-only regtest mode.
-8. Run the full matrix over IPv6. A passing IPv6 row must mean the same
-   scenarios ran over IPv6, not that the adapter reported the environment as
-   unsupported.
-
-Validation:
-
-- Unit tests for the allocator interface, fallback mode, Linux command
-  planning, cleanup ordering, and peer identity metadata.
-- A fake-adapter IPv6 run in both fallback and distinct-identity modes.
-- Real-adapter IPv6 runs for every adapter that claims support.
-- Empirical bad-peer rows over IPv6 once distinct identities are available.
+2. Add empirical bad-peer rows over IPv6 for adapters that claim IPv6 support.
 
 ### Tor v3 Chutney Lab
 
-Current blocker: Chutney is pinned and manifests can be generated, but the
-harness does not yet start a private Tor network, create onion services, or
-route adapters through SOCKS.
+Completed:
 
-Tasks:
+- `torlab` starts an isolated Chutney `hs-v3-min` network for a harness run.
+- The harness creates one ephemeral v3 onion service per peerlab listener with
+  Tor control `ADD_ONION`, advertises onion peer addresses, and tears services
+  down with `DEL_ONION`.
+- `PeerConfig.ProxyAddress` and `Environment.ProxyAddress` carry the Chutney
+  SOCKS endpoint to adapters.
+- The fake adapter passed the full Tor v3 matrix through onion peer
+  identities.
 
-1. Replace the current manifest-only `tor-v3` path with a `torlab` runtime
-   package that owns one isolated Chutney data directory per harness run.
-2. Start a private Chutney network with local directory authorities, relays,
-   one SOCKS client endpoint, and a control endpoint suitable for creating
-   onion services.
-3. Add a small Tor control client or wrapper that can:
-   - authenticate to the Chutney-controlled Tor instance;
-   - create one ephemeral v3 onion service per peerlab listener with
-     `ADD_ONION`;
-   - map onion service ports to local `127.0.0.1:<peerlab-port>`;
-   - read the resulting `.onion` names and expose them as peer identities;
-   - tear the services down during scenario cleanup.
-4. Add a harness lab lifecycle:
-   - start peerlab on local clear TCP;
-   - expose each listener through a distinct onion service;
-   - set `PeerConfig.Address` to `<service>.onion:<port>`;
-   - set `PeerConfig.Transport=tor-v3`;
-   - set `PeerConfig.ProxyAddress` and `Environment.ProxyAddress` to the
-     Chutney SOCKS endpoint;
-   - wait until each onion service is reachable before starting the adapter.
-5. Remove the blanket `!env.IsClearTCP()` skip for `tor-v3` when an active
-   `torlab` is available. Keep the unsupported result only when the lab cannot
-   start or the adapter does not claim Tor support.
-6. Teach adapters to use the supplied SOCKS endpoint or native onion transport:
-   - fake adapter first, as the harness proof;
-   - Wasabi next, because its application stack already has Tor concepts;
-   - Neutrino, Kyoto, and Nakamoto through small dialer or connector patches
-     where their libraries do not already expose proxy dialing.
-7. Add Tor-specific temporary-network scenarios:
+Remaining:
+
+1. Teach real adapters to use the supplied SOCKS endpoint or their native
+   onion transport before enabling Tor support in their capabilities.
+2. Add Tor-specific temporary-network scenarios:
    - stop and restart one onion service while the Tor network stays up;
    - stop and restart the Chutney client SOCKS endpoint;
    - delay onion reachability before adapter start;
    - verify recovery without accepting bad filter data or needing restart.
-8. Run the full BIP157/BIP158 matrix over Tor v3 for every adapter that claims
-   support. Failures after a support claim score normally; missing onion
-   support remains an environment capability result.
+3. Run the full Tor v3 matrix for each adapter after it claims support.
 
-Validation:
+### I2P and cjdns
 
-- Unit tests for Tor control command encoding, onion endpoint parsing, and lab
-  cleanup ordering.
-- A short integration smoke test that starts Chutney, creates one onion service
-  for a local TCP echo server, reaches it through SOCKS, and shuts down cleanly.
-- A fake-adapter full Tor run before enabling real adapters.
-- Real-adapter Tor runs with the same scenario IDs as IPv4 and IPv6.
+Remaining:
+
+1. Replace the current manifest-only rows with active router or namespace
+   runtimes.
+2. Provide distinct overlay identities to peerlab and adapter configuration.
+3. Run the fake-adapter proof before enabling real adapter capability claims.
 
 Scenario IDs:
 

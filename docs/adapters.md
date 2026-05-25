@@ -33,6 +33,7 @@ Adapters should listen on `127.0.0.1:0` by default and print
 ```sh
 go run ./cmd/bip157-harness --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/adapter"
 go run ./cmd/bip157-harness --environment ipv6 --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/adapter"
+go run ./cmd/bip157-harness --environment tor-v3 --tor-lab chutney --adapter-url "$ADAPTER_URL" --data-dir "$TMPDIR/adapter"
 ```
 
 ## Writing a New Adapter
@@ -51,7 +52,10 @@ go run ./cmd/bip157-harness --environment ipv6 --adapter-url "$ADAPTER_URL" --da
    disconnected, and banned peers.
 6. Keep adapter state isolated by `data_dir`. The harness will reuse the same
    adapter process across scenarios and call `/configure` between them.
-7. Implement `/capabilities` when the adapter supports more than clear IPv4.
+7. Use `PeerConfig.ProxyAddress` or `Environment.ProxyAddress` for Tor or I2P
+   transports. The harness treats an onion or I2P address as unsupported until
+   the adapter explicitly advertises that environment.
+8. Implement `/capabilities` when the adapter supports more than clear IPv4.
    Missing capabilities default to IPv4-only support.
 
 ## Included Adapters
