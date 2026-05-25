@@ -8,11 +8,11 @@ internal static class AdapterCapabilities
     /// <summary>
     /// Returns the environments this adapter currently claims as active.
     /// </summary>
-    public static CapabilitiesResponse ClearIPv4Only() =>
+    public static CapabilitiesResponse SupportedAddressEnvironments() =>
         new(new[]
         {
             new EnvironmentCapability("ipv4", true),
-            new EnvironmentCapability("ipv6", false, "adapter has not been validated with IPv6 peer identities"),
+            new EnvironmentCapability("ipv6", true),
             new EnvironmentCapability("tor-v3", false, "adapter does not configure Tor proxying"),
             new EnvironmentCapability("i2p", false, "adapter does not configure I2P proxying"),
             new EnvironmentCapability("cjdns", false, "adapter has not been validated with cjdns")

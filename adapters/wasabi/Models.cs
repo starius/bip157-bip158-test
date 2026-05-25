@@ -8,7 +8,22 @@ namespace WasabiAdapter;
 internal sealed record PeerConfig(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("address")] string Address,
-    [property: JsonPropertyName("trusted")] bool Trusted);
+    [property: JsonPropertyName("trusted")] bool Trusted,
+    [property: JsonPropertyName("address_type")] string AddressType = "",
+    [property: JsonPropertyName("transport")] string Transport = "",
+    [property: JsonPropertyName("identity")] string Identity = "",
+    [property: JsonPropertyName("proxy_address")] string ProxyAddress = "");
+
+/// <summary>
+/// Address environment selected for the current harness run.
+/// </summary>
+internal sealed record EnvironmentConfig(
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("address_type")] string AddressType,
+    [property: JsonPropertyName("transport")] string Transport,
+    [property: JsonPropertyName("requires_proxy")] bool RequiresProxy = false,
+    [property: JsonPropertyName("proxy_address")] string ProxyAddress = "",
+    [property: JsonPropertyName("distinct_peer_identities")] bool DistinctPeerIdentities = false);
 
 /// <summary>
 /// Resets the adapter for one isolated regtest scenario.
@@ -18,7 +33,8 @@ internal sealed record ConfigureRequest(
     [property: JsonPropertyName("data_dir")] string DataDir,
     [property: JsonPropertyName("peers")] PeerConfig[] Peers,
     [property: JsonPropertyName("required_peers")] uint RequiredPeers,
-    [property: JsonPropertyName("allow_discovery")] bool AllowDiscovery);
+    [property: JsonPropertyName("allow_discovery")] bool AllowDiscovery,
+    [property: JsonPropertyName("environment")] EnvironmentConfig? Environment = null);
 
 /// <summary>
 /// Reports a block hash and height on the adapter's best known chain.
@@ -65,6 +81,9 @@ internal sealed record GetMatchesResponse(
 internal sealed record PeerState(
     [property: JsonPropertyName("id")] string Id,
     [property: JsonPropertyName("address")] string Address,
+    [property: JsonPropertyName("address_type")] string AddressType,
+    [property: JsonPropertyName("transport")] string Transport,
+    [property: JsonPropertyName("identity")] string Identity,
     [property: JsonPropertyName("connected")] bool Connected,
     [property: JsonPropertyName("banned")] bool Banned,
     [property: JsonPropertyName("last_error")] string LastError = "",

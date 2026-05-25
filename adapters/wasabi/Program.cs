@@ -14,7 +14,7 @@ app.MapPost("/health", () =>
     return Results.Json(new HealthResponse(true, status));
 });
 
-app.MapPost("/capabilities", () => Results.Json(AdapterCapabilities.ClearIPv4Only()));
+app.MapPost("/capabilities", () => Results.Json(AdapterCapabilities.SupportedAddressEnvironments()));
 
 app.MapPost("/configure", async (ConfigureRequest request) =>
 {

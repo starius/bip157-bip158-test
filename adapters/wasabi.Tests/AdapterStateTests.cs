@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using NBitcoin;
 using WasabiAdapter;
 using Xunit;
@@ -49,12 +51,52 @@ public sealed class AdapterStateTests
     }
 
     [Fact]
-    public void CapabilitiesAreExplicitIpv4Only()
+    public void CapabilitiesSupportIpv4AndIpv6()
     {
-        var caps = AdapterCapabilities.ClearIPv4Only();
+        var caps = AdapterCapabilities.SupportedAddressEnvironments();
 
         Assert.Equal(5, caps.Environments.Length);
         Assert.Contains(caps.Environments, x => x.Id == "ipv4" && x.Supported);
-        Assert.All(caps.Environments.Where(x => x.Id != "ipv4"), x => Assert.False(x.Supported));
+        Assert.Contains(caps.Environments, x => x.Id == "ipv6" && x.Supported);
+        Assert.All(
+            caps.Environments.Where(x => x.Id is not "ipv4" and not "ipv6"),
+            x => Assert.False(x.Supported));
+    }
+
+    [Fact]
+    public void ParseEndpointAcceptsBracketedIpv6()
+    {
+        var endpoint = WasabiP2pClient.ParseEndpoint("[fd7a:b157:b158::1]:18444");
+
+        var ip = Assert.IsType<IPEndPoint>(endpoint);
+        Assert.Equal(AddressFamily.InterNetworkV6, ip.AddressFamily);
+        Assert.Equal(18444, ip.Port);
+    }
+
+    [Fact]
+    public void ConfigureRequestPreservesIpv6Metadata()
+    {
+        var peer = new PeerConfig(
+            "ipv6-peer",
+            "[fd7a:b157:b158::1]:18444",
+            Trusted: true,
+            AddressType: "ipv6",
+            Transport: "tcp",
+            Identity: "fd7a:b157:b158::1");
+        var request = new ConfigureRequest(
+            "regtest",
+            "data",
+            new[] { peer },
+            RequiredPeers: 1,
+            AllowDiscovery: false,
+            Environment: new EnvironmentConfig(
+                "ipv6",
+                "ipv6",
+                "tcp",
+                DistinctPeerIdentities: true));
+
+        Assert.Equal("ipv6", request.Environment?.Id);
+        Assert.Equal("[fd7a:b157:b158::1]:18444", request.Peers[0].Address);
+        Assert.Equal("fd7a:b157:b158::1", request.Peers[0].Identity);
     }
 }

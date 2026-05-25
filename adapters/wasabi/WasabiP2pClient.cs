@@ -148,6 +148,9 @@ internal sealed class WasabiP2pClient : IAsyncDisposable
             return new PeerState(
                 peer.Id,
                 peer.Address,
+                peer.AddressType,
+                peer.Transport,
+                peer.Identity,
                 isConnected,
                 Banned: false,
                 LastError: isConnected ? "" : lastError ?? "not connected",
