@@ -18,7 +18,27 @@ use tokio::{net::TcpListener, sync::Mutex, task::JoinHandle};
 struct PeerConfig {
     id: String,
     address: String,
+    #[serde(default)]
+    address_type: String,
+    #[serde(default)]
+    transport: String,
+    #[serde(default)]
+    identity: String,
+    #[serde(default)]
+    proxy_address: String,
     trusted: bool,
+}
+
+/// Address environment selected for the current harness run.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+struct EnvironmentConfig {
+    id: String,
+    address_type: String,
+    transport: String,
+    #[serde(default)]
+    proxy_address: String,
+    #[serde(default)]
+    distinct_peer_identities: bool,
 }
 
 /// Request body for configuring one isolated adapter run.
@@ -26,6 +46,8 @@ struct PeerConfig {
 struct ConfigureRequest {
     network: String,
     data_dir: String,
+    #[serde(default)]
+    environment: EnvironmentConfig,
     peers: Vec<PeerConfig>,
     required_peers: u32,
     allow_discovery: bool,
@@ -77,6 +99,12 @@ struct GetMatchesResponse {
 struct PeerState {
     id: String,
     address: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    address_type: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    transport: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    identity: String,
     connected: bool,
     banned: bool,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -163,10 +191,10 @@ async fn main() {
 }
 
 async fn capabilities() -> Json<CapabilitiesResponse> {
-    Json(clear_ipv4_capabilities())
+    Json(adapter_capabilities())
 }
 
-fn clear_ipv4_capabilities() -> CapabilitiesResponse {
+fn adapter_capabilities() -> CapabilitiesResponse {
     CapabilitiesResponse {
         environments: vec![
             EnvironmentCapability {
@@ -176,8 +204,8 @@ fn clear_ipv4_capabilities() -> CapabilitiesResponse {
             },
             EnvironmentCapability {
                 id: "ipv6".to_string(),
-                supported: false,
-                reason: "adapter has not been validated with IPv6 peer identities".to_string(),
+                supported: true,
+                reason: String::new(),
             },
             EnvironmentCapability {
                 id: "tor-v3".to_string(),
@@ -379,21 +407,30 @@ async fn list_peers(
         .config
         .peers
         .iter()
-        .map(|peer| PeerState {
-            id: peer.id.clone(),
-            address: peer.address.clone(),
-            connected: any_connected,
-            banned: false,
-            last_error: if any_connected {
-                String::new()
-            } else {
-                "not connected".into()
-            },
-            best_height: 0,
-            best_hash_hex: String::new(),
+        .map(|peer| {
+            let mut state = peer_state_from_config(peer, any_connected);
+            if !any_connected {
+                state.last_error = "not connected".into();
+            }
+            state
         })
         .collect();
     Ok(Json(ListPeersResponse { peers }))
+}
+
+fn peer_state_from_config(peer: &PeerConfig, connected: bool) -> PeerState {
+    PeerState {
+        id: peer.id.clone(),
+        address: peer.address.clone(),
+        address_type: peer.address_type.clone(),
+        transport: peer.transport.clone(),
+        identity: peer.identity.clone(),
+        connected,
+        banned: false,
+        last_error: String::new(),
+        best_height: 0,
+        best_hash_hex: String::new(),
+    }
 }
 
 async fn event_loop(
@@ -568,8 +605,8 @@ mod tests {
     }
 
     #[test]
-    fn capabilities_are_explicit_ipv4_only() {
-        let caps = clear_ipv4_capabilities();
+    fn capabilities_support_ipv4_and_ipv6() {
+        let caps = adapter_capabilities();
         assert_eq!(caps.environments.len(), 5);
         assert!(caps
             .environments
@@ -578,7 +615,36 @@ mod tests {
         assert!(caps
             .environments
             .iter()
-            .filter(|cap| cap.id != "ipv4")
+            .any(|cap| cap.id == "ipv6" && cap.supported));
+        assert!(caps
+            .environments
+            .iter()
+            .filter(|cap| cap.id != "ipv4" && cap.id != "ipv6")
             .all(|cap| !cap.supported));
+    }
+
+    #[test]
+    fn bracketed_ipv6_peer_address_parses() {
+        let addr: SocketAddr = "[fd7a:b157:b158::1]:18444".parse().expect("ipv6");
+        assert!(addr.is_ipv6());
+    }
+
+    #[test]
+    fn peer_state_preserves_ipv6_metadata() {
+        let peer = PeerConfig {
+            id: "ipv6-peer".into(),
+            address: "[fd7a:b157:b158::1]:18444".into(),
+            address_type: "ipv6".into(),
+            transport: "tcp".into(),
+            identity: "fd7a:b157:b158::1".into(),
+            proxy_address: String::new(),
+            trusted: true,
+        };
+        let state = peer_state_from_config(&peer, true);
+        assert_eq!(state.address, "[fd7a:b157:b158::1]:18444");
+        assert_eq!(state.address_type, "ipv6");
+        assert_eq!(state.transport, "tcp");
+        assert_eq!(state.identity, "fd7a:b157:b158::1");
+        assert!(state.connected);
     }
 }
