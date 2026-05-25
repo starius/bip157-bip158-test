@@ -31,18 +31,46 @@ func TestP2WPKHAddressRejectsUnsupportedScripts(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesAreExplicitIPv4Only(t *testing.T) {
-	caps := clearIPv4Capabilities()
+func TestCapabilitiesSupportIPv4AndIPv6(t *testing.T) {
+	caps := adapterCapabilities()
 	if len(caps.Environments) != 5 {
 		t.Fatalf("capabilities = %d, want 5", len(caps.Environments))
 	}
 	for _, cap := range caps.Environments {
-		if cap.ID == "ipv4" && !cap.Supported {
-			t.Fatalf("ipv4 should be supported")
+		switch cap.ID {
+		case "ipv4", "ipv6":
+			if !cap.Supported {
+				t.Fatalf("%s should be supported", cap.ID)
+			}
+		default:
+			if cap.Supported {
+				t.Fatalf("%s should be unsupported until validated", cap.ID)
+			}
 		}
-		if cap.ID != "ipv4" && cap.Supported {
-			t.Fatalf("%s should be unsupported until validated", cap.ID)
-		}
+	}
+}
+
+func TestPeerStatePreservesIPv6Metadata(t *testing.T) {
+	state := peerStateFromConfig(api.PeerConfig{
+		ID:          "ipv6-peer",
+		Address:     "[fd7a:b157:b158::1]:18444",
+		AddressType: "ipv6",
+		Transport:   "tcp",
+		Identity:    "fd7a:b157:b158::1",
+		Trusted:     true,
+	}, true)
+
+	if state.Address != "[fd7a:b157:b158::1]:18444" {
+		t.Fatalf("address = %s", state.Address)
+	}
+	if state.AddressType != "ipv6" || state.Transport != "tcp" {
+		t.Fatalf("metadata = %s/%s", state.AddressType, state.Transport)
+	}
+	if state.Identity != "fd7a:b157:b158::1" {
+		t.Fatalf("identity = %s", state.Identity)
+	}
+	if !state.Connected {
+		t.Fatalf("connected flag was not preserved")
 	}
 }
 

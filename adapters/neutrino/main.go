@@ -52,10 +52,10 @@ func newAdapter() *adapter {
 	}
 }
 
-func clearIPv4Capabilities() api.CapabilitiesResponse {
+func adapterCapabilities() api.CapabilitiesResponse {
 	return api.CapabilitiesResponse{Environments: []api.EnvironmentCapability{
 		{ID: "ipv4", Supported: true},
-		{ID: "ipv6", Supported: false, Reason: "adapter has not been validated with IPv6 peer identities"},
+		{ID: "ipv6", Supported: true},
 		{ID: "tor-v3", Supported: false, Reason: "adapter does not configure Tor proxying"},
 		{ID: "i2p", Supported: false, Reason: "adapter does not configure I2P proxying"},
 		{ID: "cjdns", Supported: false, Reason: "adapter has not been validated with cjdns"},
@@ -81,7 +81,7 @@ func (a *adapter) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	if !requirePost(w, r) {
 		return
 	}
-	writeJSON(w, clearIPv4Capabilities())
+	writeJSON(w, adapterCapabilities())
 }
 
 func (a *adapter) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -345,18 +345,25 @@ func (a *adapter) handleListPeers(w http.ResponseWriter, r *http.Request) {
 	states := make([]api.PeerState, 0, len(configured))
 	for _, peer := range configured {
 		_, ok := connected[peer.Address]
-		state := api.PeerState{
-			ID:        peer.ID,
-			Address:   peer.Address,
-			Connected: ok,
-			Banned:    false,
-		}
+		state := peerStateFromConfig(peer, ok)
 		if !ok {
 			state.LastError = "not connected"
 		}
 		states = append(states, state)
 	}
 	writeJSON(w, api.ListPeersResponse{Peers: states})
+}
+
+func peerStateFromConfig(peer api.PeerConfig, connected bool) api.PeerState {
+	return api.PeerState{
+		ID:          peer.ID,
+		Address:     peer.Address,
+		AddressType: peer.AddressType,
+		Transport:   peer.Transport,
+		Identity:    peer.Identity,
+		Connected:   connected,
+		Banned:      false,
+	}
 }
 
 func (a *adapter) stopLocked() error {
