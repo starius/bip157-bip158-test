@@ -49,6 +49,13 @@
               pkgs.just
               pkgs.openjdk_headless
               pkgs.protobuf
+              (pkgs.python3.withPackages (ps: [
+                ps.cryptography
+                ps.paramiko
+                ps.rpyc
+                ps."tomli-w"
+                ps.typeguard
+              ]))
               pkgs.rustc
               pkgs.rustfmt
               pkgs.tor
