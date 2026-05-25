@@ -144,6 +144,7 @@ func conformanceScenarios() []Definition {
 		{ID: "peer.identity_distinct_ipv4", Title: "peerlab uses distinct IPv4 peer identities", Level: score.Info, Source: SourceConformance},
 		{ID: "peer.identity_distinct_ipv6", Title: "peerlab uses distinct IPv6 peer identities", Level: score.Info, Source: SourceConformance},
 		{ID: "peer.identity_distinct_overlay", Title: "overlay peers expose distinct peer identities", Level: score.Info, Source: SourceConformance},
+		{ID: "adapter.ipv6_peer_handshake", Title: "adapter handshakes with a bracketed IPv6 peer", Level: score.Info, Source: SourceConformance},
 		{ID: "bip158.coinbase_output_included", Title: "coinbase output is included in basic filter", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.coinbase_input_excluded", Title: "coinbase input script is excluded from basic filter", Level: score.Must, Source: SourceConformance},
 		{ID: "bip158.prevout_legacy_included", Title: "legacy input prevout script is included", Level: score.Must, Source: SourceConformance},

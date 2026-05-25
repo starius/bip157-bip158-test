@@ -277,6 +277,13 @@ func expandedAdapterScenarios(fixture *chainlab.Fixture) []adapterScenario {
 func adapterScenarios(longFixture *chainlab.Fixture) []adapterScenario {
 	scenarios := []adapterScenario{
 		{
+			id:      "adapter.ipv6_peer_handshake",
+			title:   "adapter handshakes with a bracketed IPv6 peer",
+			level:   score.Info,
+			fixture: longFixture,
+			run:     runIPv6PeerHandshakeAdapter,
+		},
+		{
 			id:      "adapter.honest_wallet_receive_spend",
 			title:   "honest peer wallet receive and spend",
 			level:   score.Must,
@@ -805,6 +812,47 @@ func runHonestAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixtu
 		Level:    score.Must,
 		Status:   score.Pass,
 		Evidence: fmt.Sprintf("reported %d receive/spend matches", len(matches.Matches)),
+	}}, nil
+}
+
+func runIPv6PeerHandshakeAdapter(ctx context.Context, opts Options, fixture *chainlab.Fixture) ([]score.Result, error) {
+	if opts.Environment != string(environment.IPv6) {
+		return []score.Result{{
+			ID:       "adapter.ipv6_peer_handshake",
+			Title:    "adapter handshakes with a bracketed IPv6 peer",
+			Level:    score.Info,
+			Status:   score.Skipped,
+			Evidence: "scenario only applies to the ipv6 environment",
+		}}, nil
+	}
+
+	server := peerlab.NewServer(fixture)
+	if err := startInSelectedEnvironment(opts, server, 1); err != nil {
+		return nil, err
+	}
+	defer server.Stop()
+
+	client := api.NewClient(opts.AdapterURL)
+	if err := configureAndStart(ctx, client, opts, []api.PeerConfig{{
+		ID:      "ipv6-handshake",
+		Address: server.Addr(),
+		Trusted: true,
+	}}, 1); err != nil {
+		return nil, err
+	}
+	defer client.PostJSON(context.Background(), "/stop", map[string]string{}, nil)
+
+	waitCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
+	if err := waitForPeerHandshake(waitCtx, server); err != nil {
+		return nil, fmt.Errorf("%w; %s", err, transcriptSummary("ipv6-handshake", server))
+	}
+	return []score.Result{{
+		ID:       "adapter.ipv6_peer_handshake",
+		Title:    "adapter handshakes with a bracketed IPv6 peer",
+		Level:    score.Info,
+		Status:   score.Pass,
+		Evidence: fmt.Sprintf("adapter completed version/verack with %s; %s", server.Addr(), transcriptCounts(server)),
 	}}, nil
 }
 
@@ -2033,6 +2081,35 @@ func waitForNoMatches(ctx context.Context, client jsonPoster, req api.GetMatches
 		case <-ticker.C:
 		}
 	}
+}
+
+func waitForPeerHandshake(ctx context.Context, server *peerlab.Server) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if transcriptContainsHandshake(server.Transcript()) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for adapter peer handshake")
+		case <-ticker.C:
+		}
+	}
+}
+
+func transcriptContainsHandshake(entries []peerlab.TranscriptEntry) bool {
+	sawVersion := false
+	sawVerAck := false
+	for _, entry := range entries {
+		if entry.Dir == "in" && entry.Command == "version" {
+			sawVersion = true
+		}
+		if entry.Dir == "in" && entry.Command == "verack" {
+			sawVerAck = true
+		}
+	}
+	return sawVersion && sawVerAck
 }
 
 func upsert(results *[]score.Result, replacements ...score.Result) {

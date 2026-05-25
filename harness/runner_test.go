@@ -143,3 +143,20 @@ func TestPeerPunishedAfterRequiresObservedBadResponse(t *testing.T) {
 		t.Fatalf("explicit ban should pass without transcript: %s", evidence)
 	}
 }
+
+func TestTranscriptContainsHandshakeRequiresVersionAndVerAck(t *testing.T) {
+	entries := []peerlab.TranscriptEntry{{
+		Dir:     "in",
+		Command: "version",
+	}}
+	if transcriptContainsHandshake(entries) {
+		t.Fatalf("version without verack should not be a completed handshake")
+	}
+	entries = append(entries, peerlab.TranscriptEntry{
+		Dir:     "in",
+		Command: "verack",
+	})
+	if !transcriptContainsHandshake(entries) {
+		t.Fatalf("version plus verack should be a completed handshake")
+	}
+}
