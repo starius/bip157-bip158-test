@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
 	"github.com/bip157-bip158-test/suite/harness"
+	"github.com/bip157-bip158-test/suite/peerlab"
 	"github.com/bip157-bip158-test/suite/score"
 )
 
@@ -126,6 +128,52 @@ func TestFakeAdapterEchoesPeerEnvironmentMetadata(t *testing.T) {
 	}
 }
 
+func TestFakeAdapterHandshakesWithIPv6Peer(t *testing.T) {
+	fixture, err := chainlab.BuildWalletFixture()
+	if err != nil {
+		t.Fatalf("build fixture: %v", err)
+	}
+	peer := peerlab.NewServer(fixture)
+	if err := peer.Start("[::1]:0"); err != nil {
+		t.Fatalf("start peer: %v", err)
+	}
+	defer peer.Stop()
+
+	server := httptest.NewServer(NewServer(fixture).Handler())
+	defer server.Close()
+
+	client := api.NewClient(server.URL)
+	if err := client.PostJSON(context.Background(), "/configure", api.ConfigureRequest{
+		Network: "regtest",
+		Environment: api.EnvironmentConfig{
+			ID:          "ipv6",
+			AddressType: "ipv6",
+			Transport:   "tcp",
+		},
+		Peers: []api.PeerConfig{{
+			ID:          "peer-a",
+			Address:     peer.Addr(),
+			AddressType: "ipv6",
+			Transport:   "tcp",
+			Identity:    "::1",
+		}},
+	}, nil); err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if err := client.PostJSON(context.Background(), "/start", map[string]string{}, nil); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if transcriptHas(peer.Transcript(), "version") && transcriptHas(peer.Transcript(), "verack") {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("fake adapter did not handshake with IPv6 peer: %+v", peer.Transcript())
+}
+
 func TestFakeAdapterSuppressesMatchesForInvalidBlockScenario(t *testing.T) {
 	fixture, err := chainlab.BuildWalletFixture()
 	if err != nil {
@@ -165,6 +213,15 @@ func TestFakeAdapterSuppressesMatchesForInvalidBlockScenario(t *testing.T) {
 	if len(matches.Matches) != 0 {
 		t.Fatalf("invalid block scenario should not report fake matches")
 	}
+}
+
+func transcriptHas(entries []peerlab.TranscriptEntry, command string) bool {
+	for _, entry := range entries {
+		if entry.Dir == "in" && entry.Command == command {
+			return true
+		}
+	}
+	return false
 }
 
 func TestHarnessPassesAgainstFakeAdapter(t *testing.T) {

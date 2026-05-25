@@ -9,12 +9,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bip157-bip158-test/suite/api"
 	"github.com/bip157-bip158-test/suite/chainlab"
+	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/wire"
 )
 
 // Server handles the adapter HTTP API for a fixed wallet fixture.
@@ -24,6 +28,7 @@ type Server struct {
 	mu         sync.Mutex
 	configured bool
 	started    bool
+	env        api.EnvironmentConfig
 	peers      []api.PeerConfig
 	watches    map[string]api.WatchScriptRequest
 }
@@ -99,6 +104,7 @@ func (s *Server) handleConfigure(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.Lock()
 	s.configured = true
+	s.env = req.Environment
 	s.peers = append([]api.PeerConfig(nil), req.Peers...)
 	s.mu.Unlock()
 	writeJSON(w, map[string]bool{"ok": true})
@@ -115,6 +121,11 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.started = true
+	if s.env.ID == "ipv6" {
+		for _, peer := range s.peers {
+			go handshakePeer(peer.Address)
+		}
+	}
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -260,6 +271,47 @@ func fakePeerError(adversarial bool) string {
 		return "simulated deterministic fault"
 	}
 	return ""
+}
+
+func handshakePeer(address string) {
+	conn, err := net.DialTimeout("tcp", address, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	local, remote := netAddresses(conn)
+	version := wire.NewMsgVersion(local, remote, uint64(time.Now().UnixNano()), 0)
+	version.Services = wire.SFNodeNetwork | wire.SFNodeWitness | wire.SFNodeCF
+	if err := wire.WriteMessage(conn, version, wire.ProtocolVersion, chaincfg.RegressionNetParams.Net); err != nil {
+		return
+	}
+	for {
+		msg, _, err := wire.ReadMessage(conn, wire.ProtocolVersion, chaincfg.RegressionNetParams.Net)
+		if err != nil {
+			return
+		}
+		switch msg.(type) {
+		case *wire.MsgVersion:
+			_ = wire.WriteMessage(conn, wire.NewMsgVerAck(), wire.ProtocolVersion, chaincfg.RegressionNetParams.Net)
+		case *wire.MsgVerAck:
+			return
+		}
+	}
+}
+
+func netAddresses(conn net.Conn) (*wire.NetAddress, *wire.NetAddress) {
+	local := tcpAddr(conn.LocalAddr())
+	remote := tcpAddr(conn.RemoteAddr())
+	services := wire.SFNodeNetwork | wire.SFNodeWitness | wire.SFNodeCF
+	return wire.NewNetAddress(local, services), wire.NewNetAddress(remote, services)
+}
+
+func tcpAddr(addr net.Addr) *net.TCPAddr {
+	if tcp, ok := addr.(*net.TCPAddr); ok {
+		return tcp
+	}
+	return &net.TCPAddr{IP: net.IPv6loopback}
 }
 
 func (s *Server) hasPeerLocked(id string) bool {
