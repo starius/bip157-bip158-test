@@ -76,6 +76,40 @@ func TestLinuxIPRouteAllocatorAddsAndDeletesIPv6(t *testing.T) {
 	}
 }
 
+func TestLinuxIPRouteAllocatorKeepsAddressUntilClose(t *testing.T) {
+	runner := &recordingRunner{}
+	alloc := NewLinuxIPRoute(LinuxIPRouteOptions{
+		Command: runner,
+		Device:  "lo-test",
+	})
+	ipv6, err := environment.Lookup("ipv6")
+	if err != nil {
+		t.Fatalf("lookup ipv6: %v", err)
+	}
+
+	first, err := alloc.Allocate(ipv6, 1)
+	if err != nil {
+		t.Fatalf("allocate first: %v", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatalf("release first: %v", err)
+	}
+	if _, err := alloc.Allocate(ipv6, 1); err != nil {
+		t.Fatalf("allocate second: %v", err)
+	}
+	if err := alloc.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	want := [][]string{
+		{"ip", "addr", "add", "fd7a:b157:b158::1/128", "dev", "lo-test"},
+		{"ip", "addr", "del", "fd7a:b157:b158::1/128", "dev", "lo-test"},
+	}
+	if !reflect.DeepEqual(runner.calls, want) {
+		t.Fatalf("calls = %#v, want %#v", runner.calls, want)
+	}
+}
+
 func TestLinuxIPRouteAllocatorRejectsFailedAdd(t *testing.T) {
 	runner := &recordingRunner{err: errors.New("permission denied")}
 	alloc := NewLinuxIPRoute(LinuxIPRouteOptions{Command: runner})

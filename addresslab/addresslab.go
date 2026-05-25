@@ -142,8 +142,8 @@ func NewLinuxIPRoute(opts LinuxIPRouteOptions) Allocator {
 }
 
 type linuxIPRouteAllocator struct {
-	opts   LinuxIPRouteOptions
-	leases []Lease
+	opts  LinuxIPRouteOptions
+	added map[string]struct{}
 }
 
 func (a *linuxIPRouteAllocator) Allocate(env environment.Definition, peerIndex int) (Lease, error) {
@@ -162,23 +162,23 @@ func (a *linuxIPRouteAllocator) Allocate(env environment.Definition, peerIndex i
 		return Lease{}, fmt.Errorf("invalid generated IPv6 address %q", host)
 	}
 	cidr := host + "/128"
-	if err := a.run("addr", "add", cidr, "dev", a.opts.Device); err != nil {
-		if !isAlreadyExists(err) {
-			return Lease{}, fmt.Errorf("add %s to %s: %w", cidr, a.opts.Device, err)
+	if a.added == nil {
+		a.added = map[string]struct{}{}
+	}
+	if _, ok := a.added[cidr]; !ok {
+		if err := a.run("addr", "add", cidr, "dev", a.opts.Device); err != nil {
+			if !isAlreadyExists(err) {
+				return Lease{}, fmt.Errorf("add %s to %s: %w", cidr, a.opts.Device, err)
+			}
 		}
+		a.added[cidr] = struct{}{}
 	}
 	lease := Lease{
 		ID:       fmt.Sprintf("%s-peer-%d", env.ID, peerIndex),
 		Host:     host,
 		Distinct: true,
 	}
-	lease.Release = func() error {
-		if err := a.run("addr", "del", cidr, "dev", a.opts.Device); err != nil && !isNotFound(err) {
-			return fmt.Errorf("delete %s from %s: %w", cidr, a.opts.Device, err)
-		}
-		return nil
-	}
-	a.leases = append(a.leases, lease)
+	lease.Release = func() error { return nil }
 	return lease, nil
 }
 
@@ -192,12 +192,12 @@ func (a *linuxIPRouteAllocator) Capabilities() Capabilities {
 
 func (a *linuxIPRouteAllocator) Close() error {
 	var joined error
-	for i := len(a.leases) - 1; i >= 0; i-- {
-		if a.leases[i].Release != nil {
-			joined = errors.Join(joined, a.leases[i].Release())
+	for cidr := range a.added {
+		if err := a.run("addr", "del", cidr, "dev", a.opts.Device); err != nil && !isNotFound(err) {
+			joined = errors.Join(joined, fmt.Errorf("delete %s from %s: %w", cidr, a.opts.Device, err))
 		}
 	}
-	a.leases = nil
+	a.added = nil
 	return joined
 }
 
