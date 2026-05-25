@@ -270,9 +270,68 @@ Completed:
 
 Remaining:
 
-1. Enable real-adapter IPv6 only after each adapter proves that it can connect
-   to bracketed IPv6 peers in connect-only regtest mode.
-2. Add empirical bad-peer rows over IPv6 for adapters that claim IPv6 support.
+1. Add an adapter-level IPv6 smoke scenario that starts one honest peer on a
+   Linux ULA address, configures the adapter with a bracketed
+   `[fd7a:b157:b158::N]:port` peer address, disables discovery, and requires
+   the adapter to complete a version/verack handshake. This isolates transport
+   support from the broader BIP157/BIP158 correctness failures.
+2. Add adapter unit tests that deserialize and preserve these fields from
+   `/configure`:
+   - `environment.id=ipv6`;
+   - `environment.address_type=ipv6`;
+   - `environment.transport=tcp`;
+   - bracketed IPv6 `PeerConfig.Address`;
+   - IPv6 peer identity.
+3. Enable a backend's IPv6 capability as soon as that backend can genuinely
+   dial the harness IPv6 peer set. Existing BIP157/BIP158 failures should then
+   score normally in the IPv6 matrix instead of keeping IPv6 capability-skipped.
+4. Run every backend over:
+   - `--environment ipv6 --address-lab linux-iproute`;
+   - `--require-distinct-identities`;
+   - the full scenario catalog, not only the smoke row.
+5. Add empirical bad-peer rows over IPv6 for adapters that claim IPv6 support.
+   A bad peer must be distinguishable by IPv6 identity, not only by port.
+
+Backend tasks:
+
+- Neutrino:
+  - Keep using `neutrino.Config.ConnectPeers`, but add tests proving bracketed
+    IPv6 addresses are passed through unchanged.
+  - If Neutrino rejects the address or dials with the wrong network, set
+    `neutrino.Config.Dialer` to a direct `net.Dialer` that handles IPv4 and
+    IPv6 explicitly.
+  - Once the adapter handshakes with the IPv6 peer, mark `ipv6` supported in
+    `/capabilities` and let the existing long-chain header-sync failure score
+    as a normal IPv6 failure until that separate issue is fixed.
+- Kyoto:
+  - Keep parsing peers as `SocketAddr`; bracketed IPv6 should parse in the
+    adapter, so first add direct parser/config tests.
+  - Run Kyoto against the IPv6 address lab. If Kyoto's builder or peer manager
+    assumes IPv4 internally, patch Kyoto or the adapter wrapper so
+    `TrustedPeer::from_socket_addr` receives and dials the IPv6 socket address.
+  - After handshake and explicit-peer sync work, mark `ipv6` supported in
+    `/capabilities`.
+- Nakamoto:
+  - Remove the adapter's IPv4-only domain restriction for IPv6 runs. The
+    current `config.domains = vec![Domain::IPV4]` must become environment
+    aware and include the Nakamoto IPv6 domain when `environment.id=ipv6`.
+  - Keep `connect` populated from parsed `SocketAddr` values and add tests for
+    bracketed IPv6 parsing.
+  - Run the IPv6 matrix after the existing Nakamoto startup behavior is
+    understood; if it still requests genesis filters or fails to reach height
+    2005, classify that as the existing sync blocker, not as an IPv6 transport
+    skip.
+- Wasabi:
+  - Extend the adapter's `PeerConfig` and `EnvironmentConfig` models so
+    address type, transport, proxy address, and identity are not dropped during
+    JSON deserialization.
+  - Keep using `IPEndPoint.TryParse` for bracketed IPv6 and add parser tests
+    for `[fd7a:b157:b158::N]:port`.
+  - Verify that `Node.Connect(Network.RegTest, endpoint)` opens an IPv6 socket
+    against peerlab. If NBitcoin requires extra connection parameters for IPv6,
+    add them in the adapter wrapper rather than weakening the harness row.
+  - After handshake and explicit-peer sync work, mark `ipv6` supported in
+    `/capabilities`.
 
 ### Tor v3 Chutney Lab
 
